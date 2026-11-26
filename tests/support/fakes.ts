@@ -4,26 +4,34 @@ import { join } from 'node:path'
 import type { LlmLike } from '../../src/llm.ts'
 import type { EventLike } from '../../src/pipeline/render.ts'
 import type { SessionHeaderLike, SessionQueryLike } from '../../src/pipeline/run.ts'
-import { CONSOLIDATE_SYSTEM, EXTRACT_SYSTEM, PROMOTE_SYSTEM, WIKI_SYSTEM } from '../../src/pipeline/prompts.ts'
+import { CONSOLIDATE_SYSTEM, EXTRACT_SYSTEM, PROMOTE_SYSTEM, TIDY_SYSTEM, WIKI_SYSTEM } from '../../src/pipeline/prompts.ts'
+import { SKILL_SYSTEM } from '../../src/pipeline/skills.ts'
+import { GLOBAL_SYSTEM } from '../../src/pipeline/global.ts'
 
 export async function tempRoot(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'dsh-dreaming-'))
 }
 
-export type Pass = 'extract' | 'consolidate' | 'wiki' | 'promote'
+export type Pass = 'extract' | 'consolidate' | 'wiki' | 'promote' | 'tidy' | 'skills' | 'global'
+
+const SYSTEMS: Record<string, Pass> = { [EXTRACT_SYSTEM]: 'extract', [CONSOLIDATE_SYSTEM]: 'consolidate', [WIKI_SYSTEM]: 'wiki', [PROMOTE_SYSTEM]: 'promote', [TIDY_SYSTEM]: 'tidy', [SKILL_SYSTEM]: 'skills', [GLOBAL_SYSTEM]: 'global' }
+/** Answers for the passes a test does not care about: change nothing. */
+const NEUTRAL: Partial<Record<Pass, unknown>> = { tidy: { ops: [] }, skills: { skills: [] }, global: { groups: [] } }
 
 /** A model that answers each pass with a handler, and counts calls. */
 export class FakeLlm implements LlmLike {
   calls: Array<{ pass: Pass; user: string }> = []
 
-  constructor(private readonly answer: (pass: Pass, user: string) => unknown) {}
+  /** `answer` handles the main passes; `extra` the tidy, skill and global passes (neutral by default). */
+  constructor(private readonly answer: (pass: Pass, user: string) => unknown, private readonly extra?: (pass: Pass, user: string) => unknown) {}
 
   async *stream(options: { system: string; messages: Array<{ content: Array<{ text: string }> }>; signal?: AbortSignal }): AsyncIterable<unknown> {
-    const pass: Pass = options.system === EXTRACT_SYSTEM ? 'extract' : options.system === CONSOLIDATE_SYSTEM ? 'consolidate' : options.system === WIKI_SYSTEM ? 'wiki' : options.system === PROMOTE_SYSTEM ? 'promote' : (() => { throw new Error('unknown pass') })()
+    const pass = SYSTEMS[options.system]
+    if (pass === undefined) throw new Error('unknown pass')
     const user = options.messages[0]?.content[0]?.text ?? ''
     this.calls.push({ pass, user })
     options.signal?.throwIfAborted()
-    const value = this.answer(pass, user)
+    const value = pass in NEUTRAL ? this.extra?.(pass, user) ?? NEUTRAL[pass] : this.answer(pass, user)
     yield { type: 'text-delta', text: typeof value === 'string' ? value : JSON.stringify(value) }
     yield { type: 'finish', reason: { kind: 'stop' } }
   }

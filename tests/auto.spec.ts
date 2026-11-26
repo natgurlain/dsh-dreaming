@@ -11,7 +11,7 @@ const SETTINGS: DreamSettings = {
   maxSessions: 20, taintPolicy: 'user-only', injectedMaxBytes: 2048, chunkChars: 60_000, candidatesPerCall: 150,
   budget: { maxCalls: 60, maxInputChars: 1_600_000, maxMinutes: 5 }, callTimeoutMs: 10_000,
 }
-const AUTO: AutoSettings = { enabled: true, intervalHours: 24, retryAfterMinutes: 60, apply: true, startDelayMs: 0, checkEveryMs: 60_000 }
+const AUTO: AutoSettings = { enabled: true, intervalHours: 24, retryAfterMinutes: 60, apply: true, startDelayMs: 0, checkEveryMs: 60_000, idleMinutes: 0, global: false, notify: false }
 
 const lines = (block: string): Array<Record<string, unknown>> => block.split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l) as Record<string, unknown>)
 function model(pass: Pass, user: string): unknown {
@@ -100,7 +100,7 @@ describe('temporary model errors', () => {
     const failing = new Dreamer({ store, settings: { ...SETTINGS, retryDelaysMs: [0] }, sessions: () => sessions, llm: () => busy(llm, { left: 99 }), model: () => ({ provider: 'p', model: 'm' }) })
     const first = await new AutoDreamer(failing, store, () => sessions, AUTO).runNow()
     expect(first?.dreams.every((d) => d.record.status === 'failed')).toBe(true)
-    expect(first?.report).toMatch(/2 workspaces failed; the next try is at \d\d:\d\d UTC/)
+    expect(first?.report).toMatch(/2 failed; the next try is at \d\d:\d\d UTC/)
     const state = JSON.parse(await readFile(join(store.root, 'auto.json'), 'utf8')) as { nextRunAt: string }
     const wait = Date.parse(state.nextRunAt) - Date.now()
     expect(wait).toBeGreaterThan(55 * 60_000)

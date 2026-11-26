@@ -21,6 +21,10 @@ import { Dreamer } from './dreamer.ts'
 import { isLlmLike, type ModelChoice } from './llm.ts'
 import { MemoryStore } from './store.ts'
 import { registerTools } from './tools.ts'
+import { lastActivity, notifyDesktop, registerSkillProvider, type SkillsServiceLike } from './host.ts'
+import { CombinedSessions, TranscriptSessions } from './import.ts'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { SessionQueryLike } from './pipeline/run.ts'
 import type { TaintPolicy } from './pipeline/render.ts'
 
@@ -28,6 +32,7 @@ export { MemoryStore, storeFor, renderInjected } from './store.ts'
 export { Dreamer } from './dreamer.ts'
 export { AutoDreamer } from './auto.ts'
 export { runDream } from './pipeline/run.ts'
+export { replay } from './replay.ts'
 export type * from './types.ts'
 
 export const name = 'dreaming'
@@ -46,10 +51,15 @@ export interface Config {
   candidatesPerCall?: number
   injectMemory?: boolean
   root?: string
-  auto?: { enabled?: boolean; intervalHours?: number; apply?: boolean; startDelayMinutes?: number; retryAfterMinutes?: number }
+  auto?: { enabled?: boolean; intervalHours?: number; apply?: boolean; startDelayMinutes?: number; retryAfterMinutes?: number; idleMinutes?: number; global?: boolean; notify?: boolean }
+  skills?: boolean
+  import?: { claudeCode?: boolean; codex?: boolean; days?: number; claudeHome?: string; codexHome?: string }
 }
 
-export type ResolvedConfig = Required<Omit<Config, 'model' | 'root' | 'auto'>> & Pick<Config, 'model' | 'root'> & { auto: Required<NonNullable<Config['auto']>> }
+export type ResolvedConfig = Required<Omit<Config, 'model' | 'root' | 'auto' | 'import'>> & Pick<Config, 'model' | 'root'> & {
+  auto: Required<NonNullable<Config['auto']>>
+  import: Required<Omit<NonNullable<Config['import']>, 'claudeHome' | 'codexHome'>> & Pick<NonNullable<Config['import']>, 'claudeHome' | 'codexHome'>
+}
 
 export const Config: z<Config, ResolvedConfig> = z.object({
   maxSessionsPerDream: z.number().step(1).min(1).max(100).default(20).description('Most sessions one dream reads.'),
@@ -70,7 +80,18 @@ export const Config: z<Config, ResolvedConfig> = z.object({
     apply: z.boolean().default(true).description('Apply automatic dreams without review; /dream report shows what changed.'),
     startDelayMinutes: z.number().min(0).default(10).description('Wait after DSH starts before the first check.'),
     retryAfterMinutes: z.number().min(5).default(60).description('When a workspace fails (for example the model is busy), try again this soon.'),
-  }).default({ enabled: true, intervalHours: 24, apply: true, startDelayMinutes: 10, retryAfterMinutes: 60 }),
+    idleMinutes: z.number().min(0).default(20).description('Dream only after no session activity for this long (0: do not wait).'),
+    global: z.boolean().default(true).description('Promote preferences stated in two or more workspaces to global memory.'),
+    notify: z.boolean().default(true).description('Show a desktop notification when a report has news.'),
+  }).default({ enabled: true, intervalHours: 24, apply: true, startDelayMinutes: 10, retryAfterMinutes: 60, idleMinutes: 20, global: true, notify: true }),
+  skills: z.boolean().default(true).description('Draft skills from recurring procedures; they wait for /dream skills approve.'),
+  import: z.object({
+    claudeCode: z.boolean().default(false).description('Also dream Claude Code transcripts (~/.claude/projects).'),
+    codex: z.boolean().default(false).description('Also dream Codex transcripts (~/.codex/sessions).'),
+    days: z.number().min(1).default(14).description('Only transcripts changed in this many days.'),
+    claudeHome: z.string().description('Defaults to ~/.claude.'),
+    codexHome: z.string().description('Defaults to ~/.codex.'),
+  }).default({ claudeCode: false, codex: false, days: 14 }),
 }) as unknown as z<Config, ResolvedConfig>
 
 interface AgentLike { id?: unknown; session?: { header?: { cwd?: string; origin?: string } } }
@@ -85,7 +106,21 @@ function parseModel(value: string | undefined): ModelChoice | undefined {
 export async function apply(ctx: Context, config: ResolvedConfig): Promise<void> {
   const store = new MemoryStore(config.root ?? dshHomePath('dreaming'))
   const configured = parseModel(config.model)
-  const sessions = (): SessionQueryLike | undefined => ctx.get('sessionQuery' as never) as SessionQueryLike | undefined
+  const dshSessions = (): SessionQueryLike | undefined => ctx.get('sessionQuery' as never) as SessionQueryLike | undefined
+  const imported = config.import.claudeCode || config.import.codex
+    ? new TranscriptSessions({
+      claudeCode: config.import.claudeCode,
+      codex: config.import.codex,
+      days: config.import.days,
+      claudeHome: config.import.claudeHome ?? join(homedir(), '.claude'),
+      codexHome: config.import.codexHome ?? join(homedir(), '.codex'),
+    })
+    : undefined
+  const sessions = (): SessionQueryLike | undefined => {
+    const dsh = dshSessions()
+    if (dsh === undefined) return undefined
+    return imported === undefined ? dsh : new CombinedSessions(dsh, imported)
+  }
   const dreamer = new Dreamer({
     store,
     settings: {
@@ -96,6 +131,7 @@ export async function apply(ctx: Context, config: ResolvedConfig): Promise<void>
       candidatesPerCall: config.candidatesPerCall,
       budget: { maxCalls: config.maxModelCalls, maxInputChars: config.maxInputChars, maxMinutes: config.maxMinutes },
       callTimeoutMs: config.callTimeoutMs,
+      skills: config.skills,
     },
     sessions,
     llm: () => {
@@ -118,12 +154,19 @@ export async function apply(ctx: Context, config: ResolvedConfig): Promise<void>
     apply: config.auto.apply,
     startDelayMs: config.auto.startDelayMinutes * 60_000,
     checkEveryMs: 15 * 60_000,
-  }, (message) => {
-    try {
-      ctx.logger('dreaming').warn(message)
-    } catch {
-      console.warn(`[dreaming] ${message}`)
-    }
+    idleMinutes: config.auto.idleMinutes,
+    global: config.auto.global,
+    notify: config.auto.notify,
+  }, {
+    lastActivity: () => lastActivity(dshHomePath('sessions')),
+    notify: notifyDesktop,
+    log: (message) => {
+      try {
+        ctx.logger('dreaming').warn(message)
+      } catch {
+        console.warn(`[dreaming] ${message}`)
+      }
+    },
   })
   ctx.effect(() => {
     auto.start()
@@ -151,9 +194,19 @@ export async function apply(ctx: Context, config: ResolvedConfig): Promise<void>
     return () => { for (const dispose of disposers) dispose() }
   }, 'dreaming: tools')
 
+  const skillService = ctx.get('skills' as never) as SkillsServiceLike | undefined
+  let invalidateSkills = (): void => {}
+  if (config.skills && typeof skillService?.registerProvider === 'function') {
+    ctx.effect(() => {
+      const provider = registerSkillProvider(skillService, store)
+      invalidateSkills = provider.invalidate
+      return provider.dispose
+    }, 'dreaming: skill provider')
+  }
+
   const commands = ctx.get('commands' as never) as CommandRegistryLike | undefined
   if (commands !== undefined) {
-    ctx.effect(() => registerCommand(commands, { dreamer, store, cwdOf, auto }) ?? (() => undefined), 'dreaming: /dream command')
+    ctx.effect(() => registerCommand(commands, { dreamer, store, cwdOf, auto, invalidateSkills: () => invalidateSkills() }) ?? (() => undefined), 'dreaming: /dream command')
   }
 
   const systemPrompt = ctx.get('systemPrompt' as never) as { context(entry: { name: string; order: number; interpolate: boolean; text: (context: { agent?: AgentLike }) => string }): () => void } | undefined

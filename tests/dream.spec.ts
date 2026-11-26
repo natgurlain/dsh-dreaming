@@ -130,7 +130,7 @@ describe('a dream', () => {
     })
     const record = await dream(fixtures(), llm, {}, controller.signal)
     expect(record.status).toBe('canceled')
-    expect(await store.readCheckpoint(record.id, 's-a-1-p1')).toBeDefined()
+    expect(await store.readCheckpoint(record.id, 's-a-1-p2')).toBeDefined()
   })
 
   it('stops at the budget and stages what it has', async () => {

@@ -9,7 +9,13 @@
  */
 
 import { renderInjected, storeFor, type MemoryStore } from './store.ts'
-import type { DreamRecord, StoreRef } from './types.ts'
+import type { DreamRecord, MemorySnapshot, StoreRef } from './types.ts'
+import { runGlobalDream } from './pipeline/global.ts'
+import { fresh, overlap } from './pipeline/consolidate.ts'
+import type { Note } from './types.ts'
+
+/** Word overlap above which a global note stands in for a workspace note it came from. */
+export const GLOBAL_COVER_OVERLAP = 0.3
 import type { LlmLike, ModelChoice } from './llm.ts'
 import { runDream, type DreamRequest, type DreamSettings, type SessionQueryLike } from './pipeline/run.ts'
 
@@ -25,7 +31,7 @@ export interface DreamerHost {
 
 export class Dreamer {
   private readonly running = new Map<string, { controller: AbortController; storeKey: string; done: Promise<DreamRecord> }>()
-  private readonly injected = new Map<string, string>()
+  private readonly snapshots = new Map<string, MemorySnapshot>()
 
   constructor(private readonly host: DreamerHost) {}
 
@@ -41,8 +47,13 @@ export class Dreamer {
     for (const ref of await this.host.store.stores()) await this.refresh(ref.key)
   }
 
+  /** Start the global pass (shared preferences across workspaces). */
+  async startGlobal(): Promise<DreamRecord> {
+    return this.start(storeFor(undefined), { global: true })
+  }
+
   /** Start a dream; resolves once it is recorded, not when it finishes. */
-  async start(store: StoreRef, request: DreamRequest & { instructions?: string }): Promise<DreamRecord> {
+  async start(store: StoreRef, request: DreamRequest & { instructions?: string; global?: boolean }): Promise<DreamRecord> {
     const sessions = this.host.sessions()
     if (sessions === undefined) throw new Error('this DSH composition has no session history service (sessionQuery)')
     const llm = this.host.llm()
@@ -54,7 +65,9 @@ export class Dreamer {
     }
     const record = await this.host.store.createDream(store, request.instructions?.slice(0, 1_000))
     const controller = new AbortController()
-    const done = runDream({ store: this.host.store, sessions, llm, model, settings: this.host.settings }, record, request, controller.signal)
+    const done = (request.global === true
+      ? runGlobalDream({ store: this.host.store, llm, model, settings: this.host.settings }, record, controller.signal)
+      : runDream({ store: this.host.store, sessions, llm, model, settings: this.host.settings }, record, request, controller.signal))
       .finally(() => { this.running.delete(record.id) })
     done.then((settled) => this.host.onSettled?.(settled), () => undefined)
     this.running.set(record.id, { controller, storeKey: store.key, done })
@@ -95,7 +108,7 @@ export class Dreamer {
 
   async refresh(key: string): Promise<void> {
     const { snapshot } = await this.host.store.current(key)
-    this.injected.set(key, renderInjected(snapshot))
+    this.snapshots.set(key, snapshot)
   }
 
   /**
@@ -103,8 +116,25 @@ export class Dreamer {
    * the system prompt evaluates contexts without awaiting.
    */
   contextFor(cwd: string | undefined): string {
-    const global = this.injected.get('global') ?? ''
-    const workspace = cwd === undefined ? '' : this.injected.get(storeFor(cwd).key) ?? ''
+    const globalSnapshot = this.snapshots.get('global')
+    const global = globalSnapshot === undefined ? '' : renderInjected({ ...globalSnapshot, injected: globalSnapshot.injected.filter((id) => { const note = globalSnapshot.notes.find((n) => n.id === id); return note !== undefined && fresh(note) }) })
+    let workspace = ''
+    const key = cwd === undefined ? undefined : storeFor(cwd).key
+    const snapshot = key === undefined ? undefined : this.snapshots.get(key)
+    if (snapshot !== undefined) {
+      // A workspace note that a global note generalizes is loaded once, as the global one,
+      // but only when the two really say the same thing: a project-specific detail stays.
+      const globals = (globalSnapshot?.notes ?? []).filter((note) => globalSnapshot?.injected.includes(note.id))
+      const byId = new Map(snapshot.notes.map((note) => [note.id, note]))
+      const now = new Date().toISOString()
+      const covered = (id: string): boolean => {
+        const note = byId.get(id)
+        if (note === undefined) return false
+        const names = new Set([note.id, ...(note.supersedes ?? [])])
+        return globals.some((global) => (global.derivedFrom ?? []).some((link) => link.store === key && names.has(link.note)) && overlap(global.text, note.text) >= GLOBAL_COVER_OVERLAP)
+      }
+      workspace = renderInjected({ ...snapshot, injected: snapshot.injected.filter((id) => !covered(id) && byId.get(id) !== undefined && fresh(byId.get(id) as Note, now)) })
+    }
     const parts = [global === '' ? '' : `Across all workspaces. ${global}`, workspace === '' ? '' : `For this workspace. ${workspace}`].filter((part) => part !== '')
     return parts.join('\n')
   }

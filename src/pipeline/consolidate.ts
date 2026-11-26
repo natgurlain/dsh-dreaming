@@ -16,8 +16,14 @@ export const MAX_NOTE_CHARS = 400
 export const MAX_NOTES = 500
 /** An inferred note needs this many distinct untainted sessions to be injected. */
 export const INFERRED_INJECT_SESSIONS = 3
-/** An inferred procedure needs this many distinct sessions to become a note. */
-export const INFERRED_PROCEDURE_SESSIONS = 2
+/** Kinds that change behavior in almost every session; facts and procedures stay searchable. */
+export const INJECT_KINDS: readonly NoteKind[] = ['preference', 'correction', 'pitfall']
+/** At most this many injected notes may rest on a single session. */
+export const SINGLE_SESSION_SLOTS = 3
+/** A single-session note leaves the injected set after this long unconfirmed. */
+export const SINGLE_SESSION_TTL_DAYS = 14
+/** Word overlap above which two injected notes count as the same. */
+export const DUPLICATE_OVERLAP = 0.6
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 const isKind = (value: unknown): value is NoteKind => typeof value === 'string' && (NOTE_KINDS as readonly string[]).includes(value)
@@ -69,6 +75,7 @@ export type Op =
   | { op: 'update'; note: string; text: string; candidates: string[] }
   | { op: 'merge'; notes: string[]; text: string; kind?: NoteKind }
   | { op: 'drop'; note: string; candidates: string[]; reason: string }
+  | { op: 'reword'; note: string; text: string }
 
 const ids = (value: unknown): string[] => Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : []
 
@@ -83,6 +90,7 @@ export function parseOps(value: unknown): Op[] {
     else if (raw.op === 'update') ops.push({ op: 'update', note, text: cleanText(raw.text), candidates: ids(raw.candidates) })
     else if (raw.op === 'merge') ops.push({ op: 'merge', notes: ids(raw.notes), text: cleanText(raw.text), ...(isKind(raw.kind) ? { kind: raw.kind } : {}) })
     else if (raw.op === 'drop') ops.push({ op: 'drop', note, candidates: ids(raw.candidates), reason: typeof raw.reason === 'string' ? raw.reason.slice(0, 200) : '' })
+    else if (raw.op === 'reword') ops.push({ op: 'reword', note, text: cleanText(raw.text) })
   }
   return ops
 }
@@ -92,7 +100,7 @@ export interface Rejection { op: Op; reason: string }
 export interface ConsolidationResult {
   notes: Note[]
   rejected: Rejection[]
-  counts: { added: number; updated: number; merged: number; dropped: number; confirmed: number }
+  counts: { added: number; updated: number; merged: number; dropped: number; confirmed: number; reworded: number }
 }
 
 function sourcesOf(candidates: readonly Candidate[]): NoteSource[] {
@@ -128,11 +136,11 @@ export function newNoteId(): string {
  * Apply proposed operations to the notes.
  * @param candidates - consolidation input; tool-speaker candidates must already be quarantined.
  */
-export function applyOps(notes: readonly Note[], candidates: readonly Candidate[], ops: readonly Op[], now: string, makeId: () => string = newNoteId): ConsolidationResult {
+export function applyOps(notes: readonly Note[], candidates: readonly Candidate[], ops: readonly Op[], now: string, makeId: () => string = newNoteId, options: { tidy?: boolean } = {}): ConsolidationResult {
   const byId = new Map(notes.map((note) => [note.id, { ...note, sources: [...note.sources] }]))
   const byCandidate = new Map(candidates.map((candidate) => [candidate.id, candidate]))
   const rejected: Rejection[] = []
-  const counts = { added: 0, updated: 0, merged: 0, dropped: 0, confirmed: 0 }
+  const counts = { added: 0, updated: 0, merged: 0, dropped: 0, confirmed: 0, reworded: 0 }
   const reject = (op: Op, reason: string): void => { rejected.push({ op, reason }) }
   const evidence = (op: Op, list: readonly string[]): Candidate[] | undefined => {
     const found = list.map((id) => byCandidate.get(id))
@@ -145,6 +153,9 @@ export function applyOps(notes: readonly Note[], candidates: readonly Candidate[
     note.trust !== 'user' || cited.some((candidate) => candidate.speaker === 'user') || distinctSessions(cited) >= 2
 
   for (const op of ops) {
+    // A tidy pass has no new evidence: it may only merge and reword.
+    if (options.tidy === true && op.op !== 'merge' && op.op !== 'reword') { reject(op, 'a tidy pass may only merge or reword'); continue }
+    if (options.tidy !== true && op.op === 'reword') { reject(op, 'reword is only for a tidy pass'); continue }
     switch (op.op) {
       case 'add': {
         const cited = evidence(op, op.candidates)
@@ -152,7 +163,6 @@ export function applyOps(notes: readonly Note[], candidates: readonly Candidate[
         const trust = cited.some((candidate) => candidate.speaker === 'user') ? 'user' : 'inferred'
         const problem = lintNoteText(op.text, trust)
         if (problem !== undefined) { reject(op, problem); break }
-        if (trust === 'inferred' && op.kind === 'procedure' && distinctSessions(cited) < INFERRED_PROCEDURE_SESSIONS) { reject(op, `an inferred procedure needs ${INFERRED_PROCEDURE_SESSIONS} sessions`); break }
         if (byId.size >= MAX_NOTES) { reject(op, `the store holds the maximum of ${MAX_NOTES} notes`); break }
         const id = makeId()
         byId.set(id, { id, text: op.text, kind: op.kind, trust, sources: sourcesOf(cited), firstSeen: now, lastConfirmed: now })
@@ -190,8 +200,12 @@ export function applyOps(notes: readonly Note[], candidates: readonly Candidate[
         const merged = [...new Set(op.notes)].map((id) => byId.get(id))
         if (merged.length < 2 || merged.some((note) => note === undefined)) { reject(op, 'a merge needs two or more known notes'); break }
         const parts = merged as Note[]
-        const trust = parts.some((note) => note.trust === 'user') ? 'user' : 'inferred'
-        const problem = lintNoteText(op.text, trust)
+        // A merge brings no new evidence, so it must not raise trust: an inferred
+        // (or tainted) note merged into one the user stated would inherit user trust.
+        const trust = (parts[0] as Note).trust
+        if (parts.some((note) => note.trust !== trust)) { reject(op, 'only notes of the same trust can be merged'); break }
+        // The merged text is model-written: lint it as untrusted whatever its trust.
+        const problem = lintNoteText(op.text, 'inferred')
         if (problem !== undefined) { reject(op, problem); break }
         const id = makeId()
         const first = parts[0] as Note
@@ -202,11 +216,24 @@ export function applyOps(notes: readonly Note[], candidates: readonly Candidate[
           trust,
           sources: parts.reduce<NoteSource[]>((all, note) => mergeSources(all, note.sources), []),
           firstSeen: parts.map((note) => note.firstSeen).sort()[0] ?? now,
-          lastConfirmed: now,
-          supersedes: parts.map((note) => note.id),
+          // No new evidence: keep the latest confirmation of the parts, not now.
+          lastConfirmed: parts.map((note) => note.lastConfirmed).sort().at(-1) ?? now,
+          // Transitive, so links to earlier ids (skill history, global notes) survive merges.
+          supersedes: [...new Set(parts.flatMap((note) => [note.id, ...(note.supersedes ?? [])]))],
         })
         for (const note of parts) byId.delete(note.id)
         counts.merged += 1
+        break
+      }
+      case 'reword': {
+        const note = byId.get(op.note)
+        if (note === undefined) { reject(op, 'unknown note'); break }
+        // The reworded text is model-written: lint it as untrusted whatever its trust.
+        const problem = lintNoteText(op.text, 'inferred')
+        if (problem !== undefined) { reject(op, problem); break }
+        if (op.text === note.text) break
+        note.text = op.text
+        counts.reworded += 1
         break
       }
       case 'drop': {
@@ -224,28 +251,57 @@ export function applyOps(notes: readonly Note[], candidates: readonly Candidate[
   return { notes: [...byId.values()], rejected, counts }
 }
 
+/** Whether a single-session note is still fresh enough to load (multi-session notes always are). */
+export function fresh(note: Note, now: string = new Date().toISOString()): boolean {
+  return distinctSessions(note.sources) >= 2 || Date.parse(note.lastConfirmed) >= Date.parse(now) - SINGLE_SESSION_TTL_DAYS * 86_400_000
+}
+
 /** Whether a note may be loaded into every session. */
 export function injectable(note: Note): boolean {
+  if (!INJECT_KINDS.includes(note.kind)) return false
   if (note.trust === 'user') return true
-  if (note.kind === 'procedure') return false
   return distinctSessions(note.sources.filter((source) => source.tainted !== true)) >= INFERRED_INJECT_SESSIONS
 }
 
+function words(text: string): Set<string> {
+  return new Set(text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 2))
+}
+
+/** Share of words two texts have in common (Jaccard). */
+export function overlap(a: string, b: string): number {
+  const x = words(a)
+  const y = words(b)
+  if (x.size === 0 || y.size === 0) return 0
+  let shared = 0
+  for (const word of x) if (y.has(word)) shared += 1
+  return shared / (x.size + y.size - shared)
+}
+
 /**
- * The injected list: the proposed ids that are eligible, in order, until the
- * rendered block would exceed `maxBytes`.
+ * The injected list, decided in code: eligible kinds only, notes seen in
+ * several sessions before single-session ones (at most {@link SINGLE_SESSION_SLOTS},
+ * and only while confirmed in the last {@link SINGLE_SESSION_TTL_DAYS} days),
+ * near-duplicates skipped, until the rendered block would exceed `maxBytes`.
+ * Within each group the proposed order is kept.
  */
-export function chooseInjected(notes: readonly Note[], proposed: readonly string[], maxBytes: number): string[] {
+export function chooseInjected(notes: readonly Note[], proposed: readonly string[], maxBytes: number, now: string = new Date().toISOString()): string[] {
   const byId = new Map(notes.map((note) => [note.id, note]))
-  const chosen: string[] = []
-  for (const id of new Set(proposed)) {
-    const note = byId.get(id)
-    if (note === undefined || !injectable(note)) continue
-    const next = [...chosen, id]
-    if (Buffer.byteLength(renderInjected({ notes: [...notes], wiki: [], injected: next })) > maxBytes) continue
-    chosen.push(id)
+  const ordered = [...new Set(proposed)].map((id) => byId.get(id)).filter((note): note is Note => note !== undefined && injectable(note))
+  const multi = ordered.filter((note) => distinctSessions(note.sources) >= 2)
+  const fresh = Date.parse(now) - SINGLE_SESSION_TTL_DAYS * 86_400_000
+  const single = ordered.filter((note) => distinctSessions(note.sources) < 2 && Date.parse(note.lastConfirmed) >= fresh).slice(0, SINGLE_SESSION_SLOTS * 3)
+  const chosen: Note[] = []
+  let singles = 0
+  for (const note of [...multi, ...single]) {
+    const isSingle = distinctSessions(note.sources) < 2
+    if (isSingle && singles >= SINGLE_SESSION_SLOTS) continue
+    if (chosen.some((other) => overlap(other.text, note.text) >= DUPLICATE_OVERLAP)) continue
+    const next = [...chosen, note]
+    if (Buffer.byteLength(renderInjected({ notes: next, wiki: [], injected: next.map((n) => n.id) })) > maxBytes) continue
+    chosen.push(note)
+    if (isSingle) singles += 1
   }
-  return chosen
+  return chosen.map((note) => note.id)
 }
 
 export function parseInjected(value: unknown): string[] {

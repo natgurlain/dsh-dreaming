@@ -1,7 +1,7 @@
 {
   "name": "@natgurlain/dsh-dreaming",
   "description": "Dreaming for DeepSeek Harness: reviews past sessions between conversations and consolidates them into reviewed, versioned memory",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "author": "Nat Gurlain",
   "license": "MIT",
   "homepage": "https://github.com/natgurlain/dsh-dreaming#readme",
@@ -46,7 +46,8 @@
     "lib/index.js",
     "lib/types/**/*.d.ts",
     "cordis.patch.yml",
-    "src"
+    "src",
+    "scripts"
   ],
   "publishConfig": {
     "access": "public"
@@ -54,7 +55,8 @@
   "scripts": {
     "build": "tsc -b --pretty false && tsdown",
     "typecheck": "tsc -b --pretty false",
-    "test": "vitest run"
+    "test": "vitest run",
+    "replay": "node --experimental-transform-types --no-warnings scripts/replay.ts"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",

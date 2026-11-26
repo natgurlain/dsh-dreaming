@@ -18,7 +18,7 @@
 import { redact } from './redact.ts'
 
 /** Tool names that read untrusted content. */
-export const TAINTING_TOOL = /^(browser_|web_fetch$|web_search$|fetch$|mcp__|computer)/
+export const TAINTING_TOOL = /^(browser_|web_fetch$|web_search$|fetch$|mcp__|computer|WebFetch$|WebSearch$)/
 
 export const MAX_TOOL_ARGS_CHARS = 200
 export const MAX_TOOL_RESULT_CHARS = 500

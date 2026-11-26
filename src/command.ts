@@ -13,6 +13,11 @@
  * /dream memory [global]       what every session currently loads
  * /dream report                the latest automatic dream report
  * /dream now                   run the automatic dream now
+ * /dream tidy                  merge duplicates and reword notes in every store
+ * /dream skills                skills drafted for this workspace
+ * /dream skills show <name>    read a skill
+ * /dream skills approve <name> let sessions use it
+ * /dream skills reject <name>  drop it (it is not drafted again)
  * ```
  *
  * @module @natgurlain/dsh-dreaming/command
@@ -41,6 +46,8 @@ export interface CommandHost {
   dreamer: Dreamer
   store: MemoryStore
   auto?: AutoDreamer
+  /** Tell DSH the approved skills changed. */
+  invalidateSkills?: () => void
   cwdOf(sessionId: string | undefined): Promise<string | undefined>
 }
 
@@ -107,8 +114,38 @@ export async function runCommand(host: CommandHost, rawInput: string, sessionId:
         void host.auto.runNow()
         return ok('Dreaming started in the background for every workspace with new sessions. Keep working; see /dream status for progress and /dream report when it finishes.')
       }
+      case 'tidy': {
+        // Never await the run here: a command holds the conversation until it returns.
+        if (host.auto === undefined) return { kind: 'error', text: 'Automatic dreaming is not set up.' }
+        if (host.auto.busy) return ok('A dream run is already in progress; try /dream tidy when it finishes (see /dream status).')
+        void host.auto.runNow('tidy')
+        return ok('Tidying every store in the background: merging duplicates, rewording notes as rules, and re-choosing what every session loads. See /dream report when it finishes.')
+      }
+      case 'skills': {
+        const [action, name] = rest
+        const key = storeFor(await host.cwdOf(sessionId)).key
+        if (action === undefined || action === 'list') {
+          const all = [...await host.store.skills(key), ...(key === 'global' ? [] : await host.store.skills('global'))]
+          if (all.length === 0) return ok('No skills drafted yet. A dream drafts skills from procedures you repeat; they wait here for review.')
+          const order = { staged: 0, approved: 1, rejected: 2 }
+          return ok(all.sort((a, b) => order[a.state] - order[b.state]).map((skill) => `${skill.state === 'staged' ? 'needs review' : skill.state}: ${skill.name}: ${skill.description}`).join('\n') + '\n\nRead one with /dream skills show <name>; approve or reject it.')
+        }
+        if (name === undefined) return { kind: 'error', text: `Usage: /dream skills ${action} <name>` }
+        const found = [...await host.store.skills(key), ...(key === 'global' ? [] : await host.store.skills('global'))].find((skill) => skill.name === name)
+        if (found === undefined) return { kind: 'error', text: `No skill named ${name} for this workspace.` }
+        const owner = (await host.store.skills(key)).some((skill) => skill.name === name) ? key : 'global'
+        if (action === 'show') return ok(`[${found.state}]\n${await host.store.readSkill(owner, found.state, name) ?? ''}`)
+        if (action === 'approve' || action === 'reject') {
+          const to = action === 'approve' ? 'approved' : 'rejected'
+          if (found.state === to) return ok(`${name} is already ${to}.`)
+          await host.store.moveSkill(owner, name, found.state, to)
+          host.invalidateSkills?.()
+          return ok(action === 'approve' ? `Approved ${name}: new sessions in this workspace can use it.` : `Rejected ${name}; it will not be drafted again.`)
+        }
+        return { kind: 'error', text: 'Usage: /dream skills [list | show <name> | approve <name> | reject <name>]' }
+      }
       default:
-        return { kind: 'error', text: 'Usage: /dream [status | report | now | run [global] [focus] | diff <id> | apply <id> | discard <id> | cancel <id> | rollback [global] [version] | memory [global]]' }
+        return { kind: 'error', text: 'Usage: /dream [status | report | now | tidy | skills | run [global] [focus] | diff <id> | apply <id> | discard <id> | cancel <id> | rollback [global] [version] | memory [global]]' }
     }
   } catch (error) {
     return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
@@ -125,7 +162,7 @@ export function registerCommand(commands: CommandRegistryLike | undefined, host:
   return commands.register({
     name: COMMAND_NAME,
     description: 'Review and apply dreams: consolidated memory from past sessions',
-    input: { hint: 'report | now | status | run | diff <id> | apply <id> | discard <id> | rollback' },
+    input: { hint: 'report | now | tidy | skills | status | run | diff <id> | apply <id> | discard <id> | rollback' },
     handler: async (invocation) => runCommand(host, invocation.rawInput, invocation.agent === undefined ? undefined : String(invocation.agent.id)),
   })
 }

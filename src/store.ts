@@ -21,10 +21,11 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto'
-import { readdir, rename, rm } from 'node:fs/promises'
+import { cp, readdir, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ensureDir, readJson, readText, writeJson, writePrivate } from './files.ts'
 import type { DreamOutcome, DreamRecord, MemorySnapshot, Note, StoreRef, WikiPage } from './types.ts'
+import { renderSkill, type SkillDraft, type SkillState } from './pipeline/skills.ts'
 
 /** Versions kept per store; older ones are deleted on apply. */
 export const KEPT_VERSIONS = 20
@@ -190,12 +191,83 @@ export class MemoryStore {
     await writePrivate(join(this.dreamDir(id), 'quarantine.jsonl'), lines.map((line) => JSON.stringify(line)).join('\n') + (lines.length > 0 ? '\n' : ''))
   }
 
+  /** Checkpoint keys include session ids, which imported transcripts supply: never let one leave the folder. */
+  private checkpointPath(id: string, key: string): string {
+    const safe = /^[A-Za-z0-9._:-]{1,200}$/.test(key) && !key.includes('..') ? key.replace(/:/g, '_') : createHash('sha256').update(key).digest('hex')
+    return join(this.dreamDir(id), 'checkpoints', `${safe}.json`)
+  }
+
   async readCheckpoint<T>(id: string, key: string): Promise<T | undefined> {
-    return readJson<T | undefined>(join(this.dreamDir(id), 'checkpoints', `${key}.json`), undefined)
+    return readJson<T | undefined>(this.checkpointPath(id, key), undefined)
   }
 
   async writeCheckpoint(id: string, key: string, value: unknown): Promise<void> {
-    await writeJson(join(this.dreamDir(id), 'checkpoints', `${key}.json`), value)
+    await writeJson(this.checkpointPath(id, key), value)
+  }
+
+  // ---- skills ----
+
+  private skillDir(key: string, state: SkillState, name?: string): string {
+    if (name !== undefined && !/^[a-z0-9][a-z0-9-]{1,47}$/.test(name)) throw new Error(`invalid skill name: ${name}`)
+    return join(this.storeDir(key), 'skills', state, ...(name === undefined ? [] : [name]))
+  }
+
+  /** Stage a draft inside a dream; it reaches the store's review queue when the dream is applied. */
+  async writeDreamSkill(id: string, draft: SkillDraft): Promise<void> {
+    const dir = join(this.dreamDir(id), 'skills', draft.name)
+    await writeJson(join(dir, 'meta.json'), draft)
+    await writePrivate(join(dir, 'SKILL.md'), renderSkill(draft))
+  }
+
+  async dreamSkills(id: string): Promise<SkillDraft[]> {
+    let names: string[]
+    try {
+      names = await readdir(join(this.dreamDir(id), 'skills'))
+    } catch {
+      return []
+    }
+    const drafts = await Promise.all(names.map((name) => readJson<SkillDraft | undefined>(join(this.dreamDir(id), 'skills', name, 'meta.json'), undefined)))
+    return drafts.filter((draft): draft is SkillDraft => draft !== undefined)
+  }
+
+  /** Skills of a store in one state, or all states. */
+  async skills(key: string, state?: SkillState): Promise<Array<SkillDraft & { state: SkillState }>> {
+    const states: SkillState[] = state === undefined ? ['staged', 'approved', 'rejected'] : [state]
+    const result: Array<SkillDraft & { state: SkillState }> = []
+    for (const current of states) {
+      let names: string[]
+      try {
+        names = await readdir(this.skillDir(key, current))
+      } catch {
+        continue
+      }
+      for (const name of names.sort()) {
+        if (!/^[a-z0-9][a-z0-9-]{1,47}$/.test(name)) continue
+        const meta = await readJson<SkillDraft | undefined>(join(this.skillDir(key, current, name), 'meta.json'), undefined)
+        if (meta !== undefined) result.push({ ...meta, state: current })
+      }
+    }
+    return result
+  }
+
+  async readSkill(key: string, state: SkillState, name: string): Promise<string | undefined> {
+    return readText(join(this.skillDir(key, state, name), 'SKILL.md'))
+  }
+
+  /** Move a skill between review states (approve, reject, re-stage). */
+  async moveSkill(key: string, name: string, from: SkillState, to: SkillState): Promise<void> {
+    const source = this.skillDir(key, from, name)
+    if (await readText(join(source, 'SKILL.md')) === undefined) throw new Error(`no ${from} skill named ${name}`)
+    const target = this.skillDir(key, to, name)
+    await rm(target, { recursive: true, force: true })
+    await ensureDir(this.skillDir(key, to))
+    await rename(source, target)
+  }
+
+  /** Every skill name and source note already drafted for a store, in any state. */
+  async skillHistory(key: string): Promise<{ names: Set<string>; notes: Set<string> }> {
+    const all = await this.skills(key)
+    return { names: new Set(all.map((skill) => skill.name)), notes: new Set(all.flatMap((skill) => skill.notes)) }
   }
 
   // ---- ledger ----
@@ -243,6 +315,18 @@ export class MemoryStore {
     const versions = await this.versions(record.store.key)
     const next = Math.max(head, ...versions) + 1
     await rename(staged, join(dir, 'versions', versionDir(next)))
+    // Skill drafts go to the review queue, never straight to approved. Done
+    // before HEAD moves, and a failure here never fails the apply.
+    try {
+      const { names } = await this.skillHistory(record.store.key)
+      for (const draft of await this.dreamSkills(id)) {
+        if (names.has(draft.name)) continue
+        await ensureDir(this.skillDir(record.store.key, 'staged'))
+        await cp(join(this.dreamDir(id), 'skills', draft.name), this.skillDir(record.store.key, 'staged', draft.name), { recursive: true })
+      }
+    } catch (error) {
+      record.error = `skill drafts were not staged: ${error instanceof Error ? error.message : String(error)}`
+    }
     await writePrivate(join(dir, 'HEAD'), `${next}\n`)
     record.outcome = 'applied'
     record.appliedVersion = next
@@ -264,6 +348,11 @@ export class MemoryStore {
     if (record.status === 'completed') await this.recordLedger(record, 'discarded')
   }
 
+  /** Link sets of global notes the user rolled back (see `pipeline/global.ts`). */
+  async globalTombstones(): Promise<string[][]> {
+    return readJson<string[][]>(join(this.storeDir('global'), 'tombstones.json'), [])
+  }
+
   /** Point HEAD at an earlier kept version (default: the one before HEAD). */
   async rollback(key: string, version?: number): Promise<number> {
     const head = await this.head(key)
@@ -272,6 +361,16 @@ export class MemoryStore {
     if (target === undefined) throw new Error('there is no earlier version to roll back to')
     if (target !== 0 && !versions.includes(target)) throw new Error(`version v${target} is not kept`)
     if (target === head) throw new Error(`the store is already at v${target}`)
+    if (key === 'global') {
+      // Remember what the rollback removed, so the next global pass does not promote it straight back.
+      const kept = new Set((await this.readVersion(key, target)).notes.map((note) => note.id))
+      const removed = (await this.readVersion(key, head)).notes.filter((note) => !kept.has(note.id) && note.derivedFrom !== undefined)
+      if (removed.length > 0) {
+        const stones = await this.globalTombstones()
+        for (const note of removed) stones.push((note.derivedFrom ?? []).map((link) => `${link.store}:${link.note}`).sort())
+        await writeJson(join(this.storeDir(key), 'tombstones.json'), stones)
+      }
+    }
     await writePrivate(join(this.storeDir(key), 'HEAD'), `${target}\n`)
     return target
   }

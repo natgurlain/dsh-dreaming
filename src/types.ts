@@ -34,6 +34,8 @@ export interface Note {
   lastConfirmed: string
   /** Ids of notes this one replaced. */
   supersedes?: string[]
+  /** Global notes: the workspace notes this one generalizes. */
+  derivedFrom?: Array<{ store: string; note: string }>
 }
 
 /** One wiki page (layer 3). */
@@ -112,4 +114,6 @@ export interface DreamStats {
   rejectedOps: number
   /** Temporary model errors that were retried. */
   retries?: number
+  /** Notes a tidy pass rewrote as rules. */
+  reworded?: number
 }
