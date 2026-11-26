@@ -32,7 +32,7 @@ export const KEPT_VERSIONS = 20
 export const EMPTY_SNAPSHOT: MemorySnapshot = Object.freeze({ notes: [], wiki: [], injected: [] }) as MemorySnapshot
 
 /** Header placed above the injected memory so the model weighs it correctly. */
-export const INJECTED_HEADER = 'Memory from past sessions (reviewed by the user; may be stale, verify before relying on it):'
+export const INJECTED_HEADER = 'Memory learned from past sessions (may be stale or imperfect; verify before relying on it):'
 
 export interface LedgerEntry {
   throughSeq: number
