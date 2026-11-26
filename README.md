@@ -1,6 +1,8 @@
 # dsh-dreaming
 
-Dreaming for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH). Between conversations, a dream reads your recent sessions and proposes an updated long-term memory. Nothing changes until you review the proposal and apply it.
+Dreaming for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH). Once a day, in the background, a dream reads each workspace's new sessions and updates its long-term memory. You just read the report: `/dream report`, or ask the agent "what did the dreaming do?". Every change is a version you can undo with `/dream rollback`.
+
+If you would rather review each dream first, set `auto.apply: false`; dreams then wait for `/dream apply <id>`.
 
 The design follows what Anthropic describes for Claude Managed Agents in [The components of agent memory](https://anthropic.com/engineering/components-of-agent-memory) (Nov 2026) and the [dreams API](https://platform.claude.com/docs/en/managed-agents/dreams). The idea is the same; the code is independent and runs on whatever model you use in DSH.
 
@@ -23,13 +25,13 @@ A dream runs in the background and makes these passes, each one a single model c
 4. **Wiki**: pages are rewritten when notes change.
 5. **Choose** which notes every session loads.
 
-The result is staged as a new version with a readable diff. You apply it, discard it or roll it back with `/dream`.
+The result is staged as a new version with a readable diff. In automatic mode it is applied right away and summarized in the report (`~/.dsh/dreaming/reports/latest.md`). Otherwise you apply or discard it with `/dream`.
 
 ## Safety
 
 Dreams read transcripts that may contain hostile web pages, so the model only proposes and code decides:
 
-- **Your memory changes only when you say so.** Model tools can start a dream and read memory. Only the `/dream` command can apply, discard or roll back, and only you can type a slash command.
+- **The agent can't edit memory.** Model tools can start a dream and read memory and reports. Applying, discarding and rolling back happen only through the automatic run or the `/dream` command, which only you can type. Automatic apply skips your review, not the checks below.
 - **The model can't pick who said something.** A note counts as user-stated only if it cites a line you typed. A note supported only by tool output is quarantined, never stored.
 - **Web content contributes only what you typed.** A session that used a browser, web fetch, web search, MCP or computer-use tool is treated as tainted. By default (`taintPolicy: user-only`) only what you typed in it is read. A tainted session can never get a note loaded into every session.
 - **The agent can't overrule you on a guess.** One inferred session cannot change or remove a note you stated. An inferred procedure needs two sessions. An inferred note needs three untainted sessions before every session loads it. Procedures the agent inferred are never loaded into every session.
@@ -65,9 +67,11 @@ Restart DSH afterwards.
 
 ## Use
 
-Ask the agent to "dream about our recent sessions", or type:
+Nothing to do: the first automatic dream runs 10 minutes after DSH starts, then every 24 hours. To read what it did, or to steer it:
 
 ```
+/dream report                the latest automatic dream report
+/dream now                   run the automatic dream now
 /dream run                   dream about this workspace's sessions
 /dream run global            dream about every session
 /dream run focus on testing  steer what the dream looks for
@@ -95,10 +99,13 @@ Set these in `cordis.patch.yml` or in the profile's plugin config:
 | `maxModelCalls` / `maxInputChars` / `maxMinutes` | 60 / 1,600,000 / 30 | budget per dream |
 | `injectMemory` | true | set false to keep memory searchable but not loaded into sessions |
 | `root` | `~/.dsh/dreaming` | |
+| `auto.enabled` | true | dream automatically |
+| `auto.intervalHours` | 24 | hours between automatic dreams |
+| `auto.apply` | true | apply without review; false leaves each dream for `/dream apply` |
+| `auto.startDelayMinutes` | 10 | wait after DSH starts before the first check |
 
 ## Not yet
 
-- A scheduled nightly dream: `ctx.schedule` can deliver "call dream_run", which only ever stages.
 - A review panel in the DSH client.
 - Running dreams as DSH jobs with live progress.
 - Re-checking evidence against the full session log.

@@ -7,6 +7,7 @@
  */
 
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
+import type { AutoDreamer } from './auto.ts'
 import type { Dreamer } from './dreamer.ts'
 import { storeFor, type MemoryStore } from './store.ts'
 import type { DreamRecord, MemorySnapshot, Note, StoreRef } from './types.ts'
@@ -44,7 +45,7 @@ function score(text: string, words: readonly string[]): number {
   return words.reduce((sum, word) => sum + (lower.includes(word) ? 1 : 0), 0)
 }
 
-export function registerTools(register: (tool: ToolDefinition) => () => void, dreamer: Dreamer, store: MemoryStore, caller: CallerLookup): Array<() => void> {
+export function registerTools(register: (tool: ToolDefinition) => () => void, dreamer: Dreamer, store: MemoryStore, caller: CallerLookup, auto?: AutoDreamer): Array<() => void> {
   const scopeOf = async (exec: object, scope: unknown): Promise<StoreRef> => {
     if (scope === 'global') return storeFor(undefined)
     const cwd = await caller.cwd(exec)
@@ -97,6 +98,14 @@ export function registerTools(register: (tool: ToolDefinition) => () => void, dr
         const records = (await store.listDreams()).slice(0, 10)
         return { text: records.length === 0 ? 'No dreams yet.' : records.map(describeDream).join('\n') }
       },
+    }),
+    defineTool({
+      name: 'dream_report',
+      description: 'Show the latest automatic dream report: which workspaces were dreamed and what changed in memory. Use when the user asks what the dreaming did.',
+      parameters: {},
+      timeoutMs: 10_000,
+      output: TEXT_OUTPUT,
+      execute: async () => ({ text: await auto?.latestReport() ?? 'No automatic dream has run yet.' }),
     }),
     defineTool({
       name: 'dream_diff',

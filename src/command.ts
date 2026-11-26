@@ -11,11 +11,14 @@
  * /dream cancel <id>           stop a running dream
  * /dream rollback [global] [v] go back one version (or to version v)
  * /dream memory [global]       what every session currently loads
+ * /dream report                the latest automatic dream report
+ * /dream now                   run the automatic dream now
  * ```
  *
  * @module @natgurlain/dsh-dreaming/command
  */
 
+import type { AutoDreamer } from './auto.ts'
 import type { Dreamer } from './dreamer.ts'
 import { renderInjected, storeFor, type MemoryStore } from './store.ts'
 import { describeDream } from './tools.ts'
@@ -37,6 +40,7 @@ export interface CommandRegistryLike {
 export interface CommandHost {
   dreamer: Dreamer
   store: MemoryStore
+  auto?: AutoDreamer
   cwdOf(sessionId: string | undefined): Promise<string | undefined>
 }
 
@@ -94,8 +98,15 @@ export async function runCommand(host: CommandHost, rawInput: string, sessionId:
         const injected = renderInjected(snapshot)
         return ok(`${cwd ?? 'Global memory'} v${version}: ${snapshot.notes.length} notes, ${snapshot.wiki.length} wiki pages.\n${injected === '' ? 'Nothing is loaded into every session.' : injected}`)
       }
+      case 'report':
+        return ok(await host.auto?.latestReport() ?? 'No automatic dream has run yet. Start one with /dream now.')
+      case 'now': {
+        if (host.auto === undefined) return { kind: 'error', text: 'Automatic dreaming is not set up.' }
+        const result = await host.auto.runNow()
+        return ok(result?.report ?? 'The automatic dream could not run; check /dream status.')
+      }
       default:
-        return { kind: 'error', text: 'Usage: /dream [status | run [global] [focus] | diff <id> | apply <id> | discard <id> | cancel <id> | rollback [global] [version] | memory [global]]' }
+        return { kind: 'error', text: 'Usage: /dream [status | report | now | run [global] [focus] | diff <id> | apply <id> | discard <id> | cancel <id> | rollback [global] [version] | memory [global]]' }
     }
   } catch (error) {
     return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
@@ -112,7 +123,7 @@ export function registerCommand(commands: CommandRegistryLike | undefined, host:
   return commands.register({
     name: COMMAND_NAME,
     description: 'Review and apply dreams: consolidated memory from past sessions',
-    input: { hint: 'status | run | diff <id> | apply <id> | discard <id> | rollback' },
+    input: { hint: 'report | now | status | run | diff <id> | apply <id> | discard <id> | rollback' },
     handler: async (invocation) => runCommand(host, invocation.rawInput, invocation.agent === undefined ? undefined : String(invocation.agent.id)),
   })
 }

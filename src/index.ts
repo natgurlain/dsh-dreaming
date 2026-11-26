@@ -16,6 +16,7 @@ import z from '@deepseek-ai/schemastery'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { registerCommand, type CommandRegistryLike } from './command.ts'
+import { AutoDreamer } from './auto.ts'
 import { Dreamer } from './dreamer.ts'
 import { isLlmLike, type ModelChoice } from './llm.ts'
 import { MemoryStore } from './store.ts'
@@ -25,6 +26,7 @@ import type { TaintPolicy } from './pipeline/render.ts'
 
 export { MemoryStore, storeFor, renderInjected } from './store.ts'
 export { Dreamer } from './dreamer.ts'
+export { AutoDreamer } from './auto.ts'
 export { runDream } from './pipeline/run.ts'
 export type * from './types.ts'
 
@@ -44,9 +46,10 @@ export interface Config {
   candidatesPerCall?: number
   injectMemory?: boolean
   root?: string
+  auto?: { enabled?: boolean; intervalHours?: number; apply?: boolean; startDelayMinutes?: number }
 }
 
-export type ResolvedConfig = Required<Omit<Config, 'model' | 'root'>> & Pick<Config, 'model' | 'root'>
+export type ResolvedConfig = Required<Omit<Config, 'model' | 'root' | 'auto'>> & Pick<Config, 'model' | 'root'> & { auto: Required<NonNullable<Config['auto']>> }
 
 export const Config: z<Config, ResolvedConfig> = z.object({
   maxSessionsPerDream: z.number().step(1).min(1).max(100).default(20).description('Most sessions one dream reads.'),
@@ -61,6 +64,12 @@ export const Config: z<Config, ResolvedConfig> = z.object({
   candidatesPerCall: z.number().step(1).min(10).default(150),
   injectMemory: z.boolean().default(true).description('Load applied memory into every new session.'),
   root: z.string().description('Where memory is kept; defaults to ~/.dsh/dreaming.'),
+  auto: z.object({
+    enabled: z.boolean().default(true).description('Dream automatically in the background.'),
+    intervalHours: z.number().min(1).default(24).description('Hours between automatic dreams.'),
+    apply: z.boolean().default(true).description('Apply automatic dreams without review; /dream report shows what changed.'),
+    startDelayMinutes: z.number().min(0).default(10).description('Wait after DSH starts before the first check.'),
+  }).default({ enabled: true, intervalHours: 24, apply: true, startDelayMinutes: 10 }),
 }) as unknown as z<Config, ResolvedConfig>
 
 interface AgentLike { id?: unknown; session?: { header?: { cwd?: string; origin?: string } } }
@@ -101,6 +110,24 @@ export async function apply(ctx: Context, config: ResolvedConfig): Promise<void>
   await dreamer.init()
   ctx.effect(() => () => { void dreamer.stop() }, 'dreaming: running dreams')
 
+  const auto = new AutoDreamer(dreamer, store, sessions, {
+    enabled: config.auto.enabled,
+    intervalHours: config.auto.intervalHours,
+    apply: config.auto.apply,
+    startDelayMs: config.auto.startDelayMinutes * 60_000,
+    checkEveryMs: 15 * 60_000,
+  }, (message) => {
+    try {
+      ctx.logger('dreaming').warn(message)
+    } catch {
+      console.warn(`[dreaming] ${message}`)
+    }
+  })
+  ctx.effect(() => {
+    auto.start()
+    return () => { void auto.stop() }
+  }, 'dreaming: automatic dreams')
+
   const cwdOf = async (sessionId: string | undefined): Promise<string | undefined> => {
     if (sessionId === undefined) return undefined
     const found = await sessions()?.filterSessions([{ kind: 'id', values: [sessionId] }])
@@ -118,13 +145,13 @@ export async function apply(ctx: Context, config: ResolvedConfig): Promise<void>
   }
 
   ctx.effect(() => {
-    const disposers = registerTools((tool: ToolDefinition) => ctx.tools.register(tool), dreamer, store, caller)
+    const disposers = registerTools((tool: ToolDefinition) => ctx.tools.register(tool), dreamer, store, caller, auto)
     return () => { for (const dispose of disposers) dispose() }
   }, 'dreaming: tools')
 
   const commands = ctx.get('commands' as never) as CommandRegistryLike | undefined
   if (commands !== undefined) {
-    ctx.effect(() => registerCommand(commands, { dreamer, store, cwdOf }) ?? (() => undefined), 'dreaming: /dream command')
+    ctx.effect(() => registerCommand(commands, { dreamer, store, cwdOf, auto }) ?? (() => undefined), 'dreaming: /dream command')
   }
 
   const systemPrompt = ctx.get('systemPrompt' as never) as { context(entry: { name: string; order: number; interpolate: boolean; text: (context: { agent?: AgentLike }) => string }): () => void } | undefined

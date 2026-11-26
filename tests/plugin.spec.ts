@@ -37,9 +37,10 @@ describe('the plugin', () => {
       return { injected: [...user.matchAll(/"id":"(n-[a-z0-9]+)"/g)].map((m) => m[1]) }
     })
     const fake = fakeContext({ sessionQuery: sessions, llm, agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) } })
-    const config = (plugin.Config as unknown as (value: unknown) => plugin.ResolvedConfig)({ root })
+    const config = (plugin.Config as unknown as (value: unknown) => plugin.ResolvedConfig)({ root, auto: { enabled: false } })
+    expect(config.auto).toEqual({ enabled: false, intervalHours: 24, apply: true, startDelayMinutes: 10 })
     await plugin.apply(fake.ctx as never, config)
-    expect([...fake.tools.keys()].sort()).toEqual(['dream_diff', 'dream_run', 'dream_status', 'memory_read', 'memory_search'])
+    expect([...fake.tools.keys()].sort()).toEqual(['dream_diff', 'dream_report', 'dream_run', 'dream_status', 'memory_read', 'memory_search'])
 
     const exec = { agent: { id: 's-now', session: { header: { cwd: '/w' } } } }
     const started = await fake.tools.get('dream_run')?.execute({}, exec)

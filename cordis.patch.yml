@@ -2,8 +2,9 @@
 #
 # `dsh plugin add` registers this package's `dsh.bundle` manifest, so the
 # plugin mounts without an extra command-line option. Memory lives under
-# ~/.dsh/dreaming (0700). A dream only ever stages a new version; the user
-# applies it with `/dream apply <id>`.
+# ~/.dsh/dreaming (0700). Dreams run automatically once a day and are
+# applied; `/dream report` shows what changed and `/dream rollback` undoes it.
+# Set auto.apply to false to review each dream with `/dream apply <id>`.
 
 - insert:
     - id: dreaming
@@ -12,3 +13,7 @@
         maxSessionsPerDream: 20
         injectedMaxBytes: 2048
         taintPolicy: user-only
+        auto:
+          enabled: true
+          intervalHours: 24
+          apply: true
