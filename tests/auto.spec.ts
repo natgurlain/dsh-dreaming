@@ -121,3 +121,22 @@ describe('temporary model errors', () => {
     expect(await auto.tick()).toBeDefined()
   })
 })
+
+describe('/dream now', () => {
+  it('returns at once instead of holding the conversation for the whole run', async () => {
+    const { runCommand } = await import('../src/command.ts')
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const slow = { async *stream(options: Parameters<FakeLlm['stream']>[0]): AsyncIterable<unknown> { await gate; yield* llm.stream(options) } }
+    const slowDreamer = new Dreamer({ store, settings: SETTINGS, sessions: () => sessions, llm: () => slow, model: () => ({ provider: 'p', model: 'm' }) })
+    const slowAuto = new AutoDreamer(slowDreamer, store, () => sessions, AUTO)
+    const host = { dreamer: slowDreamer, store, auto: slowAuto, cwdOf: async () => '/repo/a' }
+    const first = await runCommand(host, 'now', 's1')
+    expect(first.text).toMatch(/started in the background/)
+    expect(slowAuto.busy).toBe(true)
+    expect((await runCommand(host, 'now', 's1')).text).toMatch(/already in progress/)
+    release()
+    await slowAuto.runNow()
+    expect(slowAuto.busy).toBe(false)
+  })
+})

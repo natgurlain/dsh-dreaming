@@ -102,8 +102,10 @@ export async function runCommand(host: CommandHost, rawInput: string, sessionId:
         return ok(await host.auto?.latestReport() ?? 'No automatic dream has run yet. Start one with /dream now.')
       case 'now': {
         if (host.auto === undefined) return { kind: 'error', text: 'Automatic dreaming is not set up.' }
-        const result = await host.auto.runNow()
-        return ok(result?.report ?? 'The automatic dream could not run; check /dream status.')
+        // Never await the run here: a command holds the conversation until it returns.
+        if (host.auto.busy) return ok('A dream run is already in progress. Keep working; see /dream status for progress and /dream report when it finishes.')
+        void host.auto.runNow()
+        return ok('Dreaming started in the background for every workspace with new sessions. Keep working; see /dream status for progress and /dream report when it finishes.')
       }
       default:
         return { kind: 'error', text: 'Usage: /dream [status | report | now | run [global] [focus] | diff <id> | apply <id> | discard <id> | cancel <id> | rollback [global] [version] | memory [global]]' }

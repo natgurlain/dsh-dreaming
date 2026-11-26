@@ -88,6 +88,11 @@ export class AutoDreamer {
     return this.runNow()
   }
 
+  /** Whether an automatic run is in progress. */
+  get busy(): boolean {
+    return this.running !== undefined
+  }
+
   /** Dream every workspace with sessions now, regardless of the interval. */
   async runNow(): Promise<AutoRunResult | undefined> {
     if (this.running !== undefined) return this.running
