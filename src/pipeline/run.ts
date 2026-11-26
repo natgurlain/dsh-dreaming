@@ -38,6 +38,8 @@ export interface DreamSettings {
   candidatesPerCall: number
   budget: Omit<Budget, 'deadline'> & { maxMinutes: number }
   callTimeoutMs: number
+  /** Waits before retrying a temporary model error (default about 2.5 minutes in all). */
+  retryDelaysMs?: readonly number[]
 }
 
 export interface DreamRequest {
@@ -68,7 +70,7 @@ export async function runDream(deps: DreamDeps, record: DreamRecord, request: Dr
     record.progress = text
     await store.saveDream(record)
   }
-  const model = new DreamModel(deps.llm, deps.model, { ...settings.budget, deadline: Date.now() + settings.budget.maxMinutes * 60_000 }, signal, settings.callTimeoutMs)
+  const model = new DreamModel(deps.llm, deps.model, { ...settings.budget, deadline: Date.now() + settings.budget.maxMinutes * 60_000 }, signal, settings.callTimeoutMs, settings.retryDelaysMs)
   const stats: DreamStats = { llmCalls: 0, inputChars: 0, candidates: 0, quarantined: 0, added: 0, updated: 0, merged: 0, dropped: 0, confirmed: 0, rejectedOps: 0 }
   const quarantine: unknown[] = []
   const rejections: Rejection[] = []
@@ -124,6 +126,7 @@ export async function runDream(deps: DreamDeps, record: DreamRecord, request: Dr
   }
   stats.llmCalls = model.calls
   stats.inputChars = model.inputChars
+  if (model.retries > 0) stats.retries = model.retries
   stats.rejectedOps = rejections.length
   record.stats = stats
   await store.saveDream(record)

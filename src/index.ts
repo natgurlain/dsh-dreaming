@@ -46,7 +46,7 @@ export interface Config {
   candidatesPerCall?: number
   injectMemory?: boolean
   root?: string
-  auto?: { enabled?: boolean; intervalHours?: number; apply?: boolean; startDelayMinutes?: number }
+  auto?: { enabled?: boolean; intervalHours?: number; apply?: boolean; startDelayMinutes?: number; retryAfterMinutes?: number }
 }
 
 export type ResolvedConfig = Required<Omit<Config, 'model' | 'root' | 'auto'>> & Pick<Config, 'model' | 'root'> & { auto: Required<NonNullable<Config['auto']>> }
@@ -69,7 +69,8 @@ export const Config: z<Config, ResolvedConfig> = z.object({
     intervalHours: z.number().min(1).default(24).description('Hours between automatic dreams.'),
     apply: z.boolean().default(true).description('Apply automatic dreams without review; /dream report shows what changed.'),
     startDelayMinutes: z.number().min(0).default(10).description('Wait after DSH starts before the first check.'),
-  }).default({ enabled: true, intervalHours: 24, apply: true, startDelayMinutes: 10 }),
+    retryAfterMinutes: z.number().min(5).default(60).description('When a workspace fails (for example the model is busy), try again this soon.'),
+  }).default({ enabled: true, intervalHours: 24, apply: true, startDelayMinutes: 10, retryAfterMinutes: 60 }),
 }) as unknown as z<Config, ResolvedConfig>
 
 interface AgentLike { id?: unknown; session?: { header?: { cwd?: string; origin?: string } } }
@@ -113,6 +114,7 @@ export async function apply(ctx: Context, config: ResolvedConfig): Promise<void>
   const auto = new AutoDreamer(dreamer, store, sessions, {
     enabled: config.auto.enabled,
     intervalHours: config.auto.intervalHours,
+    retryAfterMinutes: config.auto.retryAfterMinutes,
     apply: config.auto.apply,
     startDelayMs: config.auto.startDelayMinutes * 60_000,
     checkEveryMs: 15 * 60_000,

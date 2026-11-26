@@ -110,4 +110,6 @@ export interface DreamStats {
   dropped: number
   confirmed: number
   rejectedOps: number
+  /** Temporary model errors that were retried. */
+  retries?: number
 }

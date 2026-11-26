@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { AutoDreamer, type AutoSettings } from '../src/auto.ts'
@@ -11,7 +11,7 @@ const SETTINGS: DreamSettings = {
   maxSessions: 20, taintPolicy: 'user-only', injectedMaxBytes: 2048, chunkChars: 60_000, candidatesPerCall: 150,
   budget: { maxCalls: 60, maxInputChars: 1_600_000, maxMinutes: 5 }, callTimeoutMs: 10_000,
 }
-const AUTO: AutoSettings = { enabled: true, intervalHours: 24, apply: true, startDelayMs: 0, checkEveryMs: 60_000 }
+const AUTO: AutoSettings = { enabled: true, intervalHours: 24, retryAfterMinutes: 60, apply: true, startDelayMs: 0, checkEveryMs: 60_000 }
 
 const lines = (block: string): Array<Record<string, unknown>> => block.split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l) as Record<string, unknown>)
 function model(pass: Pass, user: string): unknown {
@@ -72,5 +72,52 @@ describe('automatic dreaming', () => {
     const result = await manual.runNow()
     expect(result?.dreams[0]?.note).toMatch(/^waiting for review: \/dream apply d-/)
     expect(await store.head(storeFor('/repo/a').key)).toBe(0)
+  })
+})
+
+describe('temporary model errors', () => {
+  const busy = (inner: FakeLlm, failures: { left: number }) => ({
+    async *stream(options: Parameters<FakeLlm['stream']>[0]): AsyncIterable<unknown> {
+      if (failures.left > 0) {
+        failures.left -= 1
+        yield { type: 'finish', reason: { kind: 'error', failure: { message: '503: {"message":"Loading model","type":"unavailable_error","code":503}' } } }
+        return
+      }
+      yield* inner.stream(options)
+    },
+  })
+
+  it('retries a busy model and then succeeds', async () => {
+    const failures = { left: 2 }
+    const retrying = new Dreamer({ store, settings: { ...SETTINGS, retryDelaysMs: [0, 0, 0] }, sessions: () => sessions, llm: () => busy(llm, failures), model: () => ({ provider: 'p', model: 'm' }) })
+    const record = await retrying.start(storeFor('/repo/a'), {})
+    const settled = await retrying.settled(record.id)
+    expect(settled?.status).toBe('completed')
+    expect(settled?.stats?.retries).toBe(2)
+  })
+
+  it('tries failed workspaces again soon instead of tomorrow', async () => {
+    const failing = new Dreamer({ store, settings: { ...SETTINGS, retryDelaysMs: [0] }, sessions: () => sessions, llm: () => busy(llm, { left: 99 }), model: () => ({ provider: 'p', model: 'm' }) })
+    const first = await new AutoDreamer(failing, store, () => sessions, AUTO).runNow()
+    expect(first?.dreams.every((d) => d.record.status === 'failed')).toBe(true)
+    expect(first?.report).toMatch(/2 workspaces failed; the next try is at \d\d:\d\d UTC/)
+    const state = JSON.parse(await readFile(join(store.root, 'auto.json'), 'utf8')) as { nextRunAt: string }
+    const wait = Date.parse(state.nextRunAt) - Date.now()
+    expect(wait).toBeGreaterThan(55 * 60_000)
+    expect(wait).toBeLessThan(61 * 60_000)
+
+    // When the retry is due and the model is back, the failed sessions are read again.
+    await writeFile(join(store.root, 'auto.json'), JSON.stringify({ ...state, nextRunAt: new Date(Date.now() - 1000).toISOString() }))
+    const second = await auto.tick()
+    expect(second?.dreams.find((d) => d.record.store.cwd === '/repo/a')?.note).toBe('applied as v1')
+  })
+
+  it('treats a failed run from before retries existed as due after the retry delay', async () => {
+    const failing = new Dreamer({ store, settings: { ...SETTINGS, retryDelaysMs: [] }, sessions: () => sessions, llm: () => busy(llm, { left: 99 }), model: () => ({ provider: 'p', model: 'm' }) })
+    await new AutoDreamer(failing, store, () => sessions, AUTO).runNow()
+    const lastRunAt = new Date(Date.now() - 61 * 60_000).toISOString()
+    await writeFile(join(store.root, 'auto.json'), JSON.stringify({ lastRunAt }))
+    for (const record of await store.listDreams()) { record.createdAt = new Date(Date.now() - 60 * 60_000).toISOString(); await store.saveDream(record) }
+    expect(await auto.tick()).toBeDefined()
   })
 })

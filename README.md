@@ -37,6 +37,7 @@ Dreams read transcripts that may contain hostile web pages, so the model only pr
 - **The agent can't overrule you on a guess.** One inferred session cannot change or remove a note you stated. An inferred procedure needs two sessions. An inferred note needs three untainted sessions before every session loads it. Procedures the agent inferred are never loaded into every session.
 - **Planted instructions are refused.** Notes that read like instructions planted in the transcript are rejected, and so are URLs that carry query strings.
 - **Secrets are redacted** before any model call and again in every note: API keys, tokens, private keys, `password=`, card-like numbers.
+- **Busy models are retried.** A temporary model error (a 503 "Loading model", 429, 5xx, a timeout or a network error) is retried after 10, 30 and 90 seconds. A workspace that still fails is tried again in an hour, and its sessions stay unread until then.
 - **Budgets are hard.** The defaults are 60 model calls, about 400k input tokens and 30 minutes per dream. A dream that runs out stages what it has and says so.
 - **Applying is safe.** Versions are immutable and the last 20 are kept. Apply refuses when memory changed after the dream started.
 
@@ -103,6 +104,7 @@ Set these in `cordis.patch.yml` or in the profile's plugin config:
 | `auto.intervalHours` | 24 | hours between automatic dreams |
 | `auto.apply` | true | apply without review; false leaves each dream for `/dream apply` |
 | `auto.startDelayMinutes` | 10 | wait after DSH starts before the first check |
+| `auto.retryAfterMinutes` | 60 | when a workspace fails (model busy, loading or offline), try again this soon instead of the next day |
 
 ## Not yet
 

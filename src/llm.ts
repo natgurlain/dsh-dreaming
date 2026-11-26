@@ -75,9 +75,32 @@ export function extractJson(text: string): unknown {
 }
 
 /** Calls the model within one dream's budget. */
+/** Waits before retrying a temporary model error: about 2.5 minutes in all. */
+export const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [10_000, 30_000, 90_000]
+
+const TRANSIENT = /\b(408|425|429|500|502|503|504|529)\b|unavailable|overloaded|loading model|rate.?limit|too many requests|timed? ?out|timeout|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|network/i
+
+/** Whether a model error is worth retrying: busy, loading, rate-limited, or the network. */
+export function isTransient(error: unknown): boolean {
+  if (error instanceof BudgetExceeded) return false
+  if (error instanceof Error && (error.name === 'TimeoutError' || TRANSIENT.test(`${error.name} ${error.message}`))) return true
+  return typeof error === 'string' && TRANSIENT.test(error)
+}
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(signal.reason); return }
+    const timer = setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve() }, ms)
+    const onAbort = (): void => { clearTimeout(timer); reject(signal.reason) }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 export class DreamModel {
   calls = 0
   inputChars = 0
+  /** Temporary errors that were retried. */
+  retries = 0
 
   constructor(
     private readonly llm: LlmLike,
@@ -85,6 +108,7 @@ export class DreamModel {
     private readonly budget: Budget,
     private readonly signal: AbortSignal,
     private readonly callTimeoutMs: number,
+    private readonly retryDelaysMs: readonly number[] = DEFAULT_RETRY_DELAYS_MS,
   ) {}
 
   /** Whether another call of about `chars` input still fits. */
@@ -99,16 +123,25 @@ export class DreamModel {
     if (Date.now() >= this.budget.deadline) throw new BudgetExceeded('time')
     this.calls += 1
     this.inputChars += system.length + user.length
-    const signal = AbortSignal.any([this.signal, AbortSignal.timeout(this.callTimeoutMs)])
-    return readText(this.llm.stream({
-      provider: this.choice.provider,
-      model: this.choice.model,
-      system,
-      messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
-      temperature: 0,
-      signal,
-      purpose: 'dreaming',
-    }))
+    for (let attempt = 0; ; attempt += 1) {
+      const signal = AbortSignal.any([this.signal, AbortSignal.timeout(this.callTimeoutMs)])
+      try {
+        return await readText(this.llm.stream({
+          provider: this.choice.provider,
+          model: this.choice.model,
+          system,
+          messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
+          temperature: 0,
+          signal,
+          purpose: 'dreaming',
+        }))
+      } catch (error) {
+        const delay = this.retryDelaysMs[attempt]
+        if (this.signal.aborted || delay === undefined || !isTransient(error) || Date.now() + delay >= this.budget.deadline) throw error
+        this.retries += 1
+        await sleep(delay, this.signal)
+      }
+    }
   }
 
   /** Ask for JSON, validate with `parse`, retry once with the error shown. */

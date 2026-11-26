@@ -20,6 +20,8 @@ import type { DreamRecord } from './types.ts'
 export interface AutoSettings {
   enabled: boolean
   intervalHours: number
+  /** After a run in which some workspace failed, try again this soon. */
+  retryAfterMinutes: number
   apply: boolean
   /** Delay before the first check after the Host starts. */
   startDelayMs: number
@@ -27,7 +29,7 @@ export interface AutoSettings {
   checkEveryMs: number
 }
 
-interface AutoState { lastRunAt?: string; lastReport?: string }
+interface AutoState { lastRunAt?: string; lastReport?: string; nextRunAt?: string }
 
 export interface AutoRunResult {
   startedAt: string
@@ -75,7 +77,14 @@ export class AutoDreamer {
     if (this.stopped || this.running !== undefined) return undefined
     const state = await readJson<AutoState>(this.statePath(), {})
     const last = state.lastRunAt === undefined ? 0 : Date.parse(state.lastRunAt)
-    if (Date.now() - last < this.settings.intervalHours * 3_600_000) return undefined
+    let due = state.nextRunAt === undefined ? last + this.settings.intervalHours * 3_600_000 : Date.parse(state.nextRunAt)
+    if (state.nextRunAt === undefined && state.lastRunAt !== undefined) {
+      // State from before retries existed: a run whose dreams failed is due for a retry.
+      const since = state.lastRunAt
+      const failed = (await this.store.listDreams()).some((record) => record.status === 'failed' && record.createdAt >= since)
+      if (failed) due = last + this.settings.retryAfterMinutes * 60_000
+    }
+    if (Date.now() < due) return undefined
     return this.runNow()
   }
 
@@ -136,15 +145,19 @@ export class AutoDreamer {
       }
     }
     const finishedAt = new Date().toISOString()
-    const report = await this.renderReport(startedAt, finishedAt, dreams)
+    const failed = dreams.filter((dream) => dream.record.status === 'failed').length
+    const nextRunAt = new Date(failed > 0
+      ? Date.now() + this.settings.retryAfterMinutes * 60_000
+      : Date.parse(startedAt) + this.settings.intervalHours * 3_600_000).toISOString()
+    const report = await this.renderReport(startedAt, finishedAt, dreams, failed, nextRunAt)
     const reportPath = join(this.store.root, 'reports', `${startedAt.replace(/[:.]/g, '-')}.md`)
     await writePrivate(reportPath, report)
     await writePrivate(join(this.store.root, 'reports', 'latest.md'), report)
-    await writeJson(this.statePath(), { lastRunAt: startedAt, lastReport: reportPath } satisfies AutoState)
+    await writeJson(this.statePath(), { lastRunAt: startedAt, lastReport: reportPath, nextRunAt } satisfies AutoState)
     return { startedAt, finishedAt, dreams, report, reportPath }
   }
 
-  private async renderReport(startedAt: string, finishedAt: string, dreams: AutoRunResult['dreams']): Promise<string> {
+  private async renderReport(startedAt: string, finishedAt: string, dreams: AutoRunResult['dreams'], failed: number, nextRunAt: string): Promise<string> {
     const lines = [`# Dream report, ${startedAt.slice(0, 16).replace('T', ' ')} UTC`, '']
     if (dreams.length === 0) {
       lines.push('No workspace had new sessions. Memory is unchanged.', '')
@@ -154,6 +167,7 @@ export class AutoDreamer {
     const sessionsRead = dreams.reduce((sum, dream) => sum + dream.record.sessions.length, 0)
     const calls = dreams.reduce((sum, dream) => sum + (dream.record.stats?.llmCalls ?? 0), 0)
     lines.push(`Read ${sessionsRead} session${sessionsRead === 1 ? '' : 's'} across ${dreams.length} workspace${dreams.length === 1 ? '' : 's'}; updated memory for ${applied.length}. ${calls} model calls; finished ${finishedAt.slice(11, 16)} UTC.`, '')
+    if (failed > 0) lines.push(`${failed} workspace${failed === 1 ? '' : 's'} failed; the next try is at ${nextRunAt.slice(11, 16)} UTC. Sessions in a failed workspace are read again then.`, '')
     lines.push('Undo any of these with `/dream rollback` in that workspace.', '')
     for (const dream of dreams) {
       lines.push(`---`, '', `**${dream.record.store.cwd ?? 'global'}**: ${dream.note}`, '')

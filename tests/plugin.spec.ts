@@ -38,7 +38,7 @@ describe('the plugin', () => {
     })
     const fake = fakeContext({ sessionQuery: sessions, llm, agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) } })
     const config = (plugin.Config as unknown as (value: unknown) => plugin.ResolvedConfig)({ root, auto: { enabled: false } })
-    expect(config.auto).toEqual({ enabled: false, intervalHours: 24, apply: true, startDelayMinutes: 10 })
+    expect(config.auto).toEqual({ enabled: false, intervalHours: 24, apply: true, startDelayMinutes: 10, retryAfterMinutes: 60 })
     await plugin.apply(fake.ctx as never, config)
     expect([...fake.tools.keys()].sort()).toEqual(['dream_diff', 'dream_report', 'dream_run', 'dream_status', 'memory_read', 'memory_search'])
 
