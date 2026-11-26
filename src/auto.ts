@@ -39,12 +39,10 @@ export interface AutoSettings {
 
 interface AutoState { lastRunAt?: string; lastReport?: string; nextRunAt?: string }
 
-export type RunMode = 'dream' | 'tidy'
 
 export interface AutoRunResult {
   startedAt: string
   finishedAt: string
-  mode: RunMode
   dreams: Array<{ record: DreamRecord; applied?: number; note: string }>
   /** The run stopped early because the user became active. */
   paused?: true
@@ -125,7 +123,7 @@ export class AutoDreamer {
       if (failed) due = last + this.settings.retryAfterMinutes * 60_000
     }
     if (Date.now() < due || !await this.idle()) return undefined
-    return this.runNow('dream', { respectIdle: true })
+    return this.runNow({ respectIdle: true })
   }
 
   /** Whether an automatic run is in progress. */
@@ -134,10 +132,10 @@ export class AutoDreamer {
   }
 
   /** Run now, regardless of the interval. Resolves when the run finishes. */
-  async runNow(mode: RunMode = 'dream', options: { respectIdle?: boolean } = {}): Promise<AutoRunResult | undefined> {
+  async runNow(options: { respectIdle?: boolean } = {}): Promise<AutoRunResult | undefined> {
     if (this.running !== undefined) return this.running
-    this.running = this.run(mode, options.respectIdle === true).catch((error: unknown) => {
-      this.log(`automatic ${mode} failed: ${error instanceof Error ? error.message : String(error)}`)
+    this.running = this.run(options.respectIdle === true).catch((error: unknown) => {
+      this.log(`automatic dream failed: ${error instanceof Error ? error.message : String(error)}`)
       return undefined
     }).finally(() => { this.running = undefined })
     return this.running
@@ -150,8 +148,7 @@ export class AutoDreamer {
     return readText(state.lastReport)
   }
 
-  private async targets(mode: RunMode): Promise<StoreRef[]> {
-    if (mode === 'tidy') return (await this.store.stores()).filter((ref) => ref.key !== 'global')
+  private async targets(): Promise<StoreRef[]> {
     const sessions = this.sessions()
     if (sessions === undefined) return []
     const workspaces = [...new Set((await sessions.listSessions())
@@ -162,12 +159,12 @@ export class AutoDreamer {
   }
 
   /** Wait for a started dream and apply it (or leave it for review). */
-  private async settle(record: DreamRecord, mode: RunMode): Promise<AutoRunResult['dreams'][number] | undefined> {
+  private async settle(record: DreamRecord): Promise<AutoRunResult['dreams'][number] | undefined> {
     const settled = await this.dreamer.settled(record.id) ?? record
     if (settled.status !== 'completed') return { record: settled, note: settled.status === 'failed' ? `failed: ${settled.error ?? 'unknown error'}` : settled.status }
     if (settled.progress === 'no changes') {
       await this.store.discard(settled.id)
-      return mode === 'dream' && settled.sessions.length > 0 ? { record: settled, note: 'read new sessions; nothing worth remembering' } : undefined
+      return settled.sessions.length > 0 ? { record: settled, note: 'read new sessions; nothing worth remembering' } : undefined
     }
     if (!this.settings.apply) return { record: settled, note: `waiting for review: /dream apply ${settled.id}` }
     try {
@@ -178,27 +175,27 @@ export class AutoDreamer {
     }
   }
 
-  private async run(mode: RunMode, respectIdle: boolean): Promise<AutoRunResult | undefined> {
+  private async run(respectIdle: boolean): Promise<AutoRunResult | undefined> {
     const startedAt = new Date().toISOString()
     const dreams: AutoRunResult['dreams'] = []
     let paused = false
-    for (const ref of await this.targets(mode)) {
+    for (const ref of await this.targets()) {
       if (this.stopped) break
       if (respectIdle && !await this.idle()) { paused = true; break }
       let record: DreamRecord
       try {
-        record = await this.dreamer.start(ref, mode === 'tidy' ? { tidy: true } : {})
+        record = await this.dreamer.start(ref, {})
       } catch (error) {
-        this.log(`${mode} skipped ${ref.cwd ?? ref.key}: ${error instanceof Error ? error.message : String(error)}`)
+        this.log(`dream skipped ${ref.cwd ?? ref.key}: ${error instanceof Error ? error.message : String(error)}`)
         continue
       }
-      const entry = await this.settle(record, mode)
+      const entry = await this.settle(record)
       if (entry !== undefined) dreams.push(entry)
     }
     // Only when some workspace memory changed in this run: otherwise there is nothing new to generalize.
-    if (this.settings.global && mode === 'dream' && !paused && !this.stopped && dreams.some((dream) => dream.applied !== undefined)) {
+    if (this.settings.global && !paused && !this.stopped && dreams.some((dream) => dream.applied !== undefined)) {
       try {
-        const entry = await this.settle(await this.dreamer.startGlobal(), mode)
+        const entry = await this.settle(await this.dreamer.startGlobal())
         if (entry !== undefined) dreams.push(entry)
       } catch (error) {
         this.log(`global pass skipped: ${error instanceof Error ? error.message : String(error)}`)
@@ -211,24 +208,22 @@ export class AutoDreamer {
       : failed > 0
         ? Date.now() + this.settings.retryAfterMinutes * 60_000
         : Date.parse(startedAt) + this.settings.intervalHours * 3_600_000).toISOString()
-    const report = await this.renderReport({ startedAt, finishedAt, mode, dreams, failed, nextRunAt, paused })
-    const reportPath = join(this.store.root, 'reports', `${startedAt.replace(/[:.]/g, '-')}${mode === 'tidy' ? '-tidy' : ''}.md`)
+    const report = await this.renderReport({ startedAt, finishedAt, dreams, failed, nextRunAt, paused })
+    const reportPath = join(this.store.root, 'reports', `${startedAt.replace(/[:.]/g, '-')}.md`)
     await writePrivate(reportPath, report)
     await writePrivate(join(this.store.root, 'reports', 'latest.md'), report)
-    const state = await readJson<AutoState>(this.statePath(), {})
-    // A tidy run does not move the dream schedule.
-    await writeJson(this.statePath(), mode === 'tidy' ? { ...state, lastReport: reportPath } : { lastRunAt: startedAt, lastReport: reportPath, nextRunAt } satisfies AutoState)
-    this.announce(mode, dreams, failed, paused)
-    return { startedAt, finishedAt, mode, dreams, ...(paused ? { paused: true as const } : {}), report, reportPath }
+    await writeJson(this.statePath(), { lastRunAt: startedAt, lastReport: reportPath, nextRunAt } satisfies AutoState)
+    this.announce(dreams, failed, paused)
+    return { startedAt, finishedAt, dreams, ...(paused ? { paused: true as const } : {}), report, reportPath }
   }
 
-  private announce(mode: RunMode, dreams: AutoRunResult['dreams'], failed: number, paused: boolean): void {
+  private announce(dreams: AutoRunResult['dreams'], failed: number, paused: boolean): void {
     if (!this.settings.notify || this.host.notify === undefined) return
     const applied = dreams.filter((dream) => dream.applied !== undefined).length
     const review = dreams.filter((dream) => dream.note.startsWith('waiting for review')).length
     if (applied === 0 && failed === 0 && review === 0) return
     const parts = [
-      applied > 0 ? `${mode === 'tidy' ? 'Tidied' : 'Updated'} memory for ${applied} workspace${applied === 1 ? '' : 's'}` : '',
+      applied > 0 ? `Updated memory for ${applied} workspace${applied === 1 ? '' : 's'}` : '',
       review > 0 ? `${review} waiting for review` : '',
       failed > 0 ? `${failed} failed` : '',
       paused ? 'paused while you work' : '',
@@ -240,18 +235,18 @@ export class AutoDreamer {
     }
   }
 
-  private async renderReport(run: { startedAt: string; finishedAt: string; mode: RunMode; dreams: AutoRunResult['dreams']; failed: number; nextRunAt: string; paused: boolean }): Promise<string> {
-    const { startedAt, finishedAt, mode, dreams, failed, nextRunAt, paused } = run
-    const lines = [`# ${mode === 'tidy' ? 'Tidy' : 'Dream'} report, ${startedAt.slice(0, 16).replace('T', ' ')} UTC`, '']
+  private async renderReport(run: { startedAt: string; finishedAt: string; dreams: AutoRunResult['dreams']; failed: number; nextRunAt: string; paused: boolean }): Promise<string> {
+    const { startedAt, finishedAt, dreams, failed, nextRunAt, paused } = run
+    const lines = [`# Dream report, ${startedAt.slice(0, 16).replace('T', ' ')} UTC`, '']
     if (paused) lines.push(`Paused because you were active; the remaining workspaces are dreamed after ${nextRunAt.slice(11, 16)} UTC once you have been idle for ${this.settings.idleMinutes} minutes.`, '')
     if (dreams.length === 0) {
-      lines.push(mode === 'tidy' ? 'Nothing needed tidying. Memory is unchanged.' : 'No workspace had new sessions. Memory is unchanged.', '')
+      lines.push('No workspace had new sessions. Memory is unchanged.', '')
       return `${lines.join('\n')}\n`
     }
     const applied = dreams.filter((dream) => dream.applied !== undefined)
     const sessionsRead = dreams.reduce((sum, dream) => sum + dream.record.sessions.length, 0)
     const calls = dreams.reduce((sum, dream) => sum + (dream.record.stats?.llmCalls ?? 0), 0)
-    lines.push(`${mode === 'tidy' ? 'Tidied' : `Read ${sessionsRead} session${sessionsRead === 1 ? '' : 's'} across`} ${dreams.length} store${dreams.length === 1 ? '' : 's'}; updated memory for ${applied.length}. ${calls} model calls; finished ${finishedAt.slice(11, 16)} UTC.`, '')
+    lines.push(`Read ${sessionsRead} session${sessionsRead === 1 ? '' : 's'} across ${dreams.length} store${dreams.length === 1 ? '' : 's'}; updated memory for ${applied.length}. ${calls} model calls; finished ${finishedAt.slice(11, 16)} UTC.`, '')
     if (failed > 0) lines.push(`${failed} failed; the next try is at ${nextRunAt.slice(11, 16)} UTC. Sessions in a failed workspace are read again then.`, '')
     lines.push('Undo any of these with `/dream rollback` in that workspace (`/dream rollback global` for global memory).', '')
     for (const dream of dreams) {

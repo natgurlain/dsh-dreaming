@@ -79,25 +79,6 @@ describe('1. what every session loads', () => {
     expect(applyOps([note('c')], [], parseOps({ ops: [{ op: 'reword', note: 'c', text: 'x' }] }), NOW).rejected).toHaveLength(1)
   })
 
-  it('/dream tidy merges duplicates in existing memory without reading sessions', async () => {
-    const sessions = new FakeSessions([session('s1', '/w', 1, [ev.user('Open the game in the browser.'), ev.user('Show the game in the browser.')])])
-    const llm = new FakeLlm(model, (pass, user) => pass === 'tidy' ? { ops: [{ op: 'merge', notes: lines(user).map((n) => n.id), text: 'Open finished games in the browser.' }] } : undefined)
-    const dreamer = new Dreamer({ store, settings: SETTINGS, sessions: () => sessions, llm: () => new FakeLlm(model), model: () => ({ provider: 'p', model: 'm' }) })
-    const first = await dreamer.start(storeFor('/w'), {})
-    await dreamer.settled(first.id)
-    await dreamer.apply(first.id)
-    expect((await store.current(storeFor('/w').key)).snapshot.notes).toHaveLength(2)
-
-    const tidier = new Dreamer({ store, settings: SETTINGS, sessions: () => sessions, llm: () => llm, model: () => ({ provider: 'p', model: 'm' }) })
-    const auto = new AutoDreamer(tidier, store, () => sessions, AUTO)
-    const reply = await runCommand({ dreamer: tidier, store, auto, cwdOf: async () => '/w' }, 'tidy', 's1')
-    expect(reply.text).toMatch(/Tidying every store in the background/)
-    const result = await auto.runNow('tidy')
-    expect(llm.count('extract')).toBe(0)
-    expect(result?.report).toMatch(/^# Tidy report/)
-    expect((await store.current(storeFor('/w').key)).snapshot.notes.map((n) => n.text)).toEqual(['Open finished games in the browser.'])
-  })
-
   it('tells the extractor when only the user is shown', async () => {
     const llm = new FakeLlm(model)
     const sessions = new FakeSessions([session('t', '/w', 1, [ev.user('Check this page'), ev.call('browser_snapshot'), ev.result('page')])])

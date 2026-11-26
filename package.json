@@ -1,7 +1,7 @@
 {
   "name": "@natgurlain/dsh-dreaming",
   "description": "Dreaming for DeepSeek Harness: reviews past sessions between conversations and consolidates them into reviewed, versioned memory",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": "Nat Gurlain",
   "license": "MIT",
   "homepage": "https://github.com/natgurlain/dsh-dreaming#readme",

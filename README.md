@@ -43,7 +43,7 @@ Dreams read transcripts that may contain hostile web pages, so the model only pr
 - **Skills always wait for you.** Even with automatic apply, a drafted skill is only offered to sessions after `/dream skills approve <name>`. A rejected skill is not drafted again.
 - **Planted instructions are refused.** Notes that read like instructions planted in the transcript are rejected, and so are URLs that carry query strings.
 - **Secrets are redacted** before any model call and again in every note: API keys, tokens, private keys, `password=`, card-like numbers.
-- **It stays out of your way.** Automatic dreams wait until no session has been active for 20 minutes, and pause between workspaces if you start working again. `/dream now` and `/dream tidy` return at once and run in the background.
+- **It stays out of your way.** Automatic dreams wait until no session has been active for 20 minutes, and pause between workspaces if you start working again. `/dream now` returns at once and runs in the background.
 - **Busy models are retried.** A temporary model error (a 503 "Loading model", 429, 5xx, a timeout or a network error) is retried after 10, 30 and 90 seconds. A workspace that still fails is tried again in an hour, and its sessions stay unread until then.
 - **Budgets are hard.** The defaults are 60 model calls, about 400k input tokens and 30 minutes per dream. A dream that runs out stages what it has and says so.
 - **Tidying can't raise trust.** A merge only joins notes of the same trust, and merged or reworded text is checked as if the agent wrote it.
@@ -82,7 +82,6 @@ Nothing to do: the first automatic dream runs once DSH has been up 10 minutes an
 ```
 /dream report                the latest automatic dream report
 /dream now                   run the automatic dream now, in the background
-/dream tidy                  merge duplicates and reword notes in every store
 /dream skills                skills drafted for this workspace
 /dream skills show <name>    read a drafted skill
 /dream skills approve <name> let new sessions use it

@@ -11,7 +11,7 @@
 import { renderInjected, storeFor, type MemoryStore } from './store.ts'
 import type { DreamRecord, MemorySnapshot, StoreRef } from './types.ts'
 import { runGlobalDream } from './pipeline/global.ts'
-import { fresh, overlap } from './pipeline/consolidate.ts'
+import { chooseInjected, fresh, overlap } from './pipeline/consolidate.ts'
 import type { Note } from './types.ts'
 
 /** Word overlap above which a global note stands in for a workspace note it came from. */
@@ -107,8 +107,17 @@ export class Dreamer {
   }
 
   async refresh(key: string): Promise<void> {
-    const { snapshot } = await this.host.store.current(key)
-    this.snapshots.set(key, snapshot)
+    this.snapshots.set(key, (await this.memory(key)).snapshot)
+  }
+
+  /**
+   * A store's current memory as sessions see it: the injection rules
+   * (single-session cap, duplicates, expiry, byte limit) apply on load, so
+   * memory saved under older rules obeys them without being rewritten.
+   */
+  async memory(key: string): Promise<{ version: number; snapshot: MemorySnapshot }> {
+    const { version, snapshot } = await this.host.store.current(key)
+    return { version, snapshot: { ...snapshot, injected: chooseInjected(snapshot.notes, snapshot.injected, this.host.settings.injectedMaxBytes) } }
   }
 
   /**

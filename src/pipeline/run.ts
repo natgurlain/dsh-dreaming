@@ -59,8 +59,6 @@ export interface DreamRequest {
   excludeSessionId?: string
   /** Re-read sessions the ledger already covers. */
   force?: boolean
-  /** Read no sessions: merge, reword and re-choose the current notes. */
-  tidy?: boolean
   /** Use these candidates instead of reading sessions (replay). */
   candidates?: Candidate[]
 }
@@ -93,7 +91,7 @@ export async function runDream(deps: DreamDeps, record: DreamRecord, request: Dr
   try {
     const base = await store.readVersion(record.store.key, record.baseVersion)
     await progress('selecting sessions')
-    const selected = request.tidy === true || request.candidates !== undefined ? [] : await selectSessions(deps, record, request, signal)
+    const selected = request.candidates !== undefined ? [] : await selectSessions(deps, record, request, signal)
 
     // ---- extract ----
     const candidates: Candidate[] = []
@@ -183,7 +181,7 @@ export async function runDream(deps: DreamDeps, record: DreamRecord, request: Dr
     }
 
     // Merge near-duplicates (including ones added in this dream) and reword notes into rules.
-    if ((request.tidy === true || JSON.stringify(notes) !== JSON.stringify(base.notes)) && notes.length >= 2 && !budgetHit) {
+    if (JSON.stringify(notes) !== JSON.stringify(base.notes) && notes.length >= 2 && !budgetHit) {
       await progress('tidying notes')
       const user = tidyPrompt(notes)
       if (model.fits(TIDY_SYSTEM.length + user.length)) {
@@ -198,7 +196,7 @@ export async function runDream(deps: DreamDeps, record: DreamRecord, request: Dr
     const changed = JSON.stringify(notes) !== JSON.stringify(base.notes)
     let wiki = base.wiki
     let injected = base.injected.filter((id) => notes.some((note) => note.id === id && injectable(note)))
-    if ((changed || request.tidy === true) && !budgetHit) {
+    if (changed && !budgetHit) {
       if (notes.length === 0) wiki = []
       else {
         await progress('rewriting the wiki')
@@ -217,7 +215,7 @@ export async function runDream(deps: DreamDeps, record: DreamRecord, request: Dr
     }
     // Draft skills from new, untainted procedures; they wait for review.
     let skills: SkillDraft[] = []
-    if (!budgetHit && request.tidy !== true && settings.skills !== false) {
+    if (!budgetHit && settings.skills !== false) {
       const history = await store.skillHistory(record.store.key)
       const procedures = skillSources(notes, history.notes, base.notes).slice(0, 12)
       if (procedures.length > 0) {

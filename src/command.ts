@@ -13,7 +13,6 @@
  * /dream memory [global]       what every session currently loads
  * /dream report                the latest automatic dream report
  * /dream now                   run the automatic dream now
- * /dream tidy                  merge duplicates and reword notes in every store
  * /dream skills                skills drafted for this workspace
  * /dream skills show <name>    read a skill
  * /dream skills approve <name> let sessions use it
@@ -101,7 +100,7 @@ export async function runCommand(host: CommandHost, rawInput: string, sessionId:
       }
       case 'memory': {
         const cwd = rest[0] === 'global' ? undefined : await host.cwdOf(sessionId)
-        const { version, snapshot } = await host.store.current(storeFor(cwd).key)
+        const { version, snapshot } = await host.dreamer.memory(storeFor(cwd).key)
         const injected = renderInjected(snapshot)
         return ok(`${cwd ?? 'Global memory'} v${version}: ${snapshot.notes.length} notes, ${snapshot.wiki.length} wiki pages.\n${injected === '' ? 'Nothing is loaded into every session.' : injected}`)
       }
@@ -113,13 +112,6 @@ export async function runCommand(host: CommandHost, rawInput: string, sessionId:
         if (host.auto.busy) return ok('A dream run is already in progress. Keep working; see /dream status for progress and /dream report when it finishes.')
         void host.auto.runNow()
         return ok('Dreaming started in the background for every workspace with new sessions. Keep working; see /dream status for progress and /dream report when it finishes.')
-      }
-      case 'tidy': {
-        // Never await the run here: a command holds the conversation until it returns.
-        if (host.auto === undefined) return { kind: 'error', text: 'Automatic dreaming is not set up.' }
-        if (host.auto.busy) return ok('A dream run is already in progress; try /dream tidy when it finishes (see /dream status).')
-        void host.auto.runNow('tidy')
-        return ok('Tidying every store in the background: merging duplicates, rewording notes as rules, and re-choosing what every session loads. See /dream report when it finishes.')
       }
       case 'skills': {
         const [action, name] = rest
@@ -145,7 +137,7 @@ export async function runCommand(host: CommandHost, rawInput: string, sessionId:
         return { kind: 'error', text: 'Usage: /dream skills [list | show <name> | approve <name> | reject <name>]' }
       }
       default:
-        return { kind: 'error', text: 'Usage: /dream [status | report | now | tidy | skills | run [global] [focus] | diff <id> | apply <id> | discard <id> | cancel <id> | rollback [global] [version] | memory [global]]' }
+        return { kind: 'error', text: 'Usage: /dream [status | report | now | skills | run [global] [focus] | diff <id> | apply <id> | discard <id> | cancel <id> | rollback [global] [version] | memory [global]]' }
     }
   } catch (error) {
     return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
@@ -162,7 +154,7 @@ export function registerCommand(commands: CommandRegistryLike | undefined, host:
   return commands.register({
     name: COMMAND_NAME,
     description: 'Review and apply dreams: consolidated memory from past sessions',
-    input: { hint: 'report | now | tidy | skills | status | run | diff <id> | apply <id> | discard <id> | rollback' },
+    input: { hint: 'report | now | skills | status | run | diff <id> | apply <id> | discard <id> | rollback' },
     handler: async (invocation) => runCommand(host, invocation.rawInput, invocation.agent === undefined ? undefined : String(invocation.agent.id)),
   })
 }

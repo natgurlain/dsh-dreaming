@@ -8,6 +8,7 @@ import { CombinedSessions, parseClaudeCode, TranscriptSessions } from '../src/im
 import { applyGroups, linkKey, retireGlobal } from '../src/pipeline/global.ts'
 import type { DreamSettings } from '../src/pipeline/run.ts'
 import { skillSources } from '../src/pipeline/skills.ts'
+import { SINGLE_SESSION_SLOTS } from '../src/pipeline/consolidate.ts'
 import { MemoryStore, storeFor } from '../src/store.ts'
 import type { MemorySnapshot, Note } from '../src/types.ts'
 import { ev, FakeLlm, FakeSessions, session, tempRoot } from './support/fakes.ts'
@@ -150,14 +151,18 @@ describe('idle check', () => {
   })
 })
 
-describe('tidy runs', () => {
-  it('do not run the global pass', async () => {
+describe('memory written under older rules', () => {
+  it('obeys the injection rules on load, with no model call and no new version', async () => {
+    const words = ['alpha bravo charlie', 'delta echo foxtrot', 'golf hotel india', 'juliet kilo lima', 'mike november oscar', 'papa quebec romeo']
+    const notes = words.map((text, i) => note(`a${i}`, { text: `Prefer ${text}.` }))
+    await seed('/a', { notes, wiki: [], injected: notes.map((n) => n.id) })
     const llm = new FakeLlm(() => ({}))
-    const sessions = new FakeSessions([])
-    const dreamer = new Dreamer({ store, settings: SETTINGS, sessions: () => sessions, llm: () => llm, model: () => ({ provider: 'p', model: 'm' }) })
-    await seed('/a', { notes: [note('a1')], wiki: [], injected: [] })
-    const { AutoDreamer } = await import('../src/auto.ts')
-    await new AutoDreamer(dreamer, store, () => sessions, { enabled: true, intervalHours: 24, retryAfterMinutes: 60, apply: true, startDelayMs: 0, checkEveryMs: 60_000, idleMinutes: 0, global: true, notify: false }).runNow('tidy')
-    expect(llm.count('global')).toBe(0)
+    const dreamer = new Dreamer({ store, settings: SETTINGS, sessions: () => new FakeSessions([]), llm: () => llm, model: () => ({ provider: 'p', model: 'm' }) })
+    await dreamer.init()
+    const loaded = dreamer.contextFor('/a').split('\n').filter((line) => line.startsWith('- '))
+    expect(loaded).toHaveLength(SINGLE_SESSION_SLOTS)
+    expect((await dreamer.memory(storeFor('/a').key)).snapshot.injected).toHaveLength(SINGLE_SESSION_SLOTS)
+    expect((await store.current(storeFor('/a').key)).version).toBe(1)
+    expect(llm.calls).toHaveLength(0)
   })
 })
