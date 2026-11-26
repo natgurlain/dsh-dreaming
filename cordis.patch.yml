@@ -1,0 +1,14 @@
+# Dreaming layer for DeepSeek Harness.
+#
+# `dsh plugin add` registers this package's `dsh.bundle` manifest, so the
+# plugin mounts without an extra command-line option. Memory lives under
+# ~/.dsh/dreaming (0700). A dream only ever stages a new version; the user
+# applies it with `/dream apply <id>`.
+
+- insert:
+    - id: dreaming
+      name: '@natgurlain/dsh-dreaming'
+      config:
+        maxSessionsPerDream: 20
+        injectedMaxBytes: 2048
+        taintPolicy: user-only

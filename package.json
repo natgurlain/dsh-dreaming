@@ -1,0 +1,76 @@
+{
+  "name": "@natgurlain/dsh-dreaming",
+  "description": "Dreaming for DeepSeek Harness: reviews past sessions between conversations and consolidates them into reviewed, versioned memory",
+  "version": "0.1.0",
+  "author": "Nat Gurlain",
+  "license": "MIT",
+  "homepage": "https://github.com/natgurlain/dsh-dreaming#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/natgurlain/dsh-dreaming.git"
+  },
+  "bugs": {
+    "url": "https://github.com/natgurlain/dsh-dreaming/issues"
+  },
+  "type": "module",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "memory",
+    "dreaming",
+    "ai-agent"
+  ],
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": ">=24.9.0",
+    "dsh": "^0.2.2-rc.1"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/types/**/*.d.ts",
+    "cordis.patch.yml",
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -b --pretty false && tsdown",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-home-paths": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.2.2-rc.1"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "~3.19.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-home-paths": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.2",
+    "@types/node": "^22.20.0",
+    "tsdown": "0.22.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11"
+  }
+}
