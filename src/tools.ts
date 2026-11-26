@@ -25,7 +25,9 @@ export interface CallerLookup {
 
 export function describeDream(record: DreamRecord): string {
   const scope = record.store.cwd === undefined ? 'global' : record.store.cwd
-  const parts = [`${record.id} [${record.status}${record.outcome === undefined ? '' : `, ${record.outcome}${record.appliedVersion === undefined ? '' : ` as v${record.appliedVersion}`}`}] ${scope}: ${record.progress}`]
+  const started = new Date(record.createdAt)
+  const when = Number.isNaN(started.getTime()) ? '' : `${started.toLocaleDateString('en-CA')} ${started.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })} `
+  const parts = [`${when}${record.id} [${record.status}${record.outcome === undefined ? '' : `, ${record.outcome}${record.appliedVersion === undefined ? '' : ` as v${record.appliedVersion}`}`}] ${scope}: ${record.progress}`]
   if (record.stats !== undefined) parts.push(`${record.sessions.length} sessions, ${record.stats.candidates} candidates, +${record.stats.added} ~${record.stats.updated} merged ${record.stats.merged} -${record.stats.dropped}, ${record.stats.llmCalls} model calls`)
   if (record.truncated) parts.push('partial: budget ran out')
   if (record.error !== undefined) parts.push(`error: ${record.error}`)
